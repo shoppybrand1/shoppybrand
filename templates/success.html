@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShoppyBrand – Bestelling geplaatst</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="site-header">
+  <img src="{{ url_for('static', filename='logo.jpg') }}" alt="ShoppyBrand" class="logo">
+  <span class="tagline">Jouw stijl, jouw keuze.</span>
+</header>
+
+<div class="success-page">
+  <div class="success-card">
+    <div class="success-check">✓</div>
+
+    <h1>Bedankt voor je bestelling!</h1>
+
+    <div class="order-nr">
+      Bestelnummer: <strong>#{{ bestelnummer }}</strong>
+    </div>
+
+    <p>
+      Je factuur is verstuurd naar je e-mailadres.<br>
+      Je ontvangt een bevestiging zodra je betaling is ontvangen.
+    </p>
+
+    {% if order %}
+    <div style="background:var(--grey);border-radius:8px;padding:16px;text-align:left;margin:20px 0;font-size:13px">
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--grey-dk)">Totaalbedrag</span>
+        <strong>€ {{ "%.2f"|format(order.totaalbedrag) }}</strong>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+        <span style="color:var(--grey-dk)">Verzending</span>
+        <span>{{ order.verzendmethode }}</span>
+      </div>
+      <div style="display:flex;justify-content:space-between">
+        <span style="color:var(--grey-dk)">Status</span>
+        <span>{{ order.bestellingstatus }}</span>
+      </div>
+    </div>
+    {% endif %}
+
+    <p style="font-size:13px;color:var(--grey-dk)">
+      Vragen? Stuur ons een DM op Instagram.
+    </p>
+
+    <a href="{{ url_for('order') }}" class="back-btn">Nieuwe bestelling plaatsen</a>
+  </div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShoppyBrand – Bestelling plaatsen</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<header class="site-header">
+  <img src="{{ url_for('static', filename='logo.jpg') }}" alt="ShoppyBrand" class="logo">
+  <span class="tagline">Jouw stijl, jouw keuze.</span>
+</header>
+
+<div class="order-layout">
+
+  <!-- ── LEFT: products + form ──────────────────────────────────────── -->
+  <main class="order-main">
+
+    <!-- Search & Filters -->
+    <div class="search-wrap">
+      <span class="search-icon">🔍</span>
+      <input type="text" id="search-input" placeholder="Zoek op merk, kleur of type..."
+             oninput="filterProducts()">
+    </div>
+    <div class="filter-row">
+      <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">Alle</button>
+      <button class="filter-btn" data-filter="Sneakers" onclick="setFilter('Sneakers', this)">Sneakers</button>
+      <button class="filter-btn" data-filter="Tracksuits" onclick="setFilter('Tracksuits', this)">Tracksuits</button>
+      <button class="filter-btn" data-filter="Horloges" onclick="setFilter('Horloges', this)">Horloges</button>
+    </div>
+
+    <!-- Products -->
+    <div class="section-title">Producten <span>in voorraad</span></div>
+    <div class="products-grid" id="products-grid">
+      <div class="empty-state" style="padding:40px;color:var(--grey-dk);grid-column:1/-1">Producten laden...</div>
+    </div>
+
+    <!-- On-demand -->
+    <div class="section-title" id="od-title" style="display:none">
+      📦 Niet op voorraad? <span>Bestel op aanvraag</span>
+    </div>
+    <div class="products-grid" id="od-grid" style="display:none"></div>
+
+    <!-- ── Customer Form ──────────────────────────────────────────────── -->
+    <div class="form-section">
+      <div class="form-section-title">👤 Jouw gegevens</div>
+
+      <div id="autofill-toast" class="autofill-toast"></div>
+
+      <div class="form-grid">
+        <div class="form-group full">
+          <label>Instagram account <span class="req">*</span></label>
+          <input type="text" id="instagram" class="form-control" placeholder="@jouwusername"
+                 oninput="validateForm()" onblur="lookupCustomer()">
+        </div>
+        <div class="form-group">
+          <label>Volledige naam <span class="req">*</span></label>
+          <input type="text" id="naam" class="form-control" placeholder="Voornaam Achternaam"
+                 oninput="validateForm()">
+        </div>
+        <div class="form-group">
+          <label>E-mailadres <span class="req">*</span></label>
+          <input type="email" id="email" class="form-control" placeholder="naam@email.com"
+                 oninput="validateForm()">
+        </div>
+        <div class="form-group full">
+          <label>Telefoonnummer</label>
+          <input type="tel" id="telefoon" class="form-control" placeholder="+31 6 12345678">
+        </div>
+        <div class="form-group full">
+          <label>Straat + huisnummer <span class="req">*</span></label>
+          <input type="text" id="adres" class="form-control" placeholder="Voorbeeldstraat 12A"
+                 oninput="validateForm()">
+        </div>
+        <div class="form-group">
+          <label>Postcode <span class="req">*</span></label>
+          <input type="text" id="postcode" class="form-control" placeholder="1234 AB"
+                 oninput="validateForm()">
+        </div>
+        <div class="form-group">
+          <label>Stad <span class="req">*</span></label>
+          <input type="text" id="stad" class="form-control" placeholder="Amsterdam"
+                 oninput="validateForm()">
+        </div>
+        <div class="form-group full">
+          <label>Land <span class="req">*</span></label>
+          <select id="land" class="form-control" onchange="validateForm()">
+            <option value="">Selecteer land</option>
+            <option value="Nederland" selected>Nederland</option>
+            <option value="België">België</option>
+            <option value="Duitsland">Duitsland</option>
+          </select>
+        </div>
+        <div class="form-group full">
+          <label>Opmerking</label>
+          <textarea id="opmerking" class="form-control" placeholder="Bijzondere wensen of opmerkingen..."></textarea>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── Shipping ───────────────────────────────────────────────────── -->
+    <div class="form-section">
+      <div class="form-section-title">🚚 Verzendmethode</div>
+      <div id="free-shipping-notice" class="free-shipping-notice">
+        ✅ Gratis verzending!
+      </div>
+      <div class="shipping-options" id="shipping-options">
+        <label class="shipping-option selected" id="ship-dhl">
+          <input type="radio" name="verzendmethode" value="DHL" checked onchange="onShippingChange(this.closest('label'))">
+          <span class="shipping-option-label">📦 DHL</span>
+          <span class="shipping-option-price">€ {{ settings.dhl_kosten|default('4.50') }}</span>
+        </label>
+        <label class="shipping-option" id="ship-postnl">
+          <input type="radio" name="verzendmethode" value="PostNL" onchange="onShippingChange(this.closest('label'))">
+          <span class="shipping-option-label">📮 PostNL</span>
+          <span class="shipping-option-price">€ {{ settings.postnl_kosten|default('5.50') }}</span>
+        </label>
+      </div>
+      <div id="shipping-upsell" class="shipping-upsell">
+        Bestel voor €{{ settings.gratis_verzending_minimum|default(200) }} of meer en ontvang gratis verzending!
+      </div>
+    </div>
+
+    <!-- ── Discount code ──────────────────────────────────────────────── -->
+    <div class="form-section">
+      <div class="form-section-title">🎟️ Kortingscode</div>
+      <div class="discount-row">
+        <input type="text" id="discount-input" class="form-control" placeholder="JOUWCODE"
+               style="text-transform:uppercase" onkeydown="if(event.key==='Enter') applyDiscount()">
+        <button class="apply-btn" onclick="applyDiscount()">Toepassen</button>
+      </div>
+      <div id="discount-feedback" class="discount-feedback"></div>
+    </div>
+
+  </main><!-- /order-main -->
+
+  <!-- ── RIGHT: Cart + Summary ─────────────────────────────────────────── -->
+  <aside class="order-sidebar">
+
+    <!-- Cart items -->
+    <div class="sidebar-section" style="flex:1">
+      <div class="sidebar-title">🛒 Winkelwagen</div>
+      <div id="cart-items">
+        <div class="cart-empty">Nog geen producten toegevoegd.</div>
+      </div>
+    </div>
+
+    <!-- Summary -->
+    <div class="sidebar-section">
+      <div class="sidebar-title">Besteloverzicht</div>
+      <div class="summary-row">
+        <span class="label">Subtotaal</span>
+        <span id="s-subtotaal">€ 0,00</span>
+      </div>
+      <div class="summary-row">
+        <span class="label">Verzendkosten</span>
+        <span id="s-verzend">€ –</span>
+      </div>
+      <div class="summary-row" id="s-korting-row" style="display:none">
+        <span class="label">Korting</span>
+        <span id="s-korting" class="discount-amount">– € 0,00</span>
+      </div>
+      <div class="summary-row total">
+        <span class="label">TOTAAL</span>
+        <span id="s-totaal">€ 0,00</span>
+      </div>
+      <div class="free-ship-promo">🎉 Gratis verzending bij bestellingen vanaf €{{ settings.gratis_verzending_minimum|default(200) }}!</div>
+    </div>
+
+    <!-- Submit -->
+    <div class="sidebar-section">
+      <button class="submit-btn" id="submit-btn" disabled onclick="submitOrder()">
+        Bestelling plaatsen →
+      </button>
+      <p style="font-size:11px;color:var(--grey-dk);text-align:center;margin-top:10px">
+        Door te bestellen ga je akkoord met onze voorwaarden.
+      </p>
+    </div>
+
+  </aside>
+</div>
+
+<div id="toast" class="toast"></div>
+
+<script>
+// ── CONFIG (from Flask) ────────────────────────────────────────────────────
+const SETTINGS = {
+  gratis_min:    parseFloat('{{ settings.gratis_verzending_minimum|default(200) }}'),
+  dhl_kosten:    parseFloat('{{ settings.dhl_kosten|default(4.50) }}'),
+  postnl_kosten: parseFloat('{{ settings.postnl_kosten|default(5.50) }}'),
+};
+
+// ── STATE ──────────────────────────────────────────────────────────────────
+let cart          = [];
+let activeFilter  = 'all';
+let activeDiscount = null;
+let allProducts   = [];
+
+// ── FORMATTING ────────────────────────────────────────────────────────────
+const fmt = (n) =>
+  '€ ' + parseFloat(n).toFixed(2).replace('.', ',').replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+
+// ── INIT ───────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  loadProducts();
+  loadOnDemand();
+  updateSummary();
+});
+
+// ── PRODUCTS ───────────────────────────────────────────────────────────────
+async function loadProducts() {
+  const grid = document.getElementById('products-grid');
+  try {
+    const res = await fetch('/api/products');
+    allProducts = await res.json();
+    if (!allProducts.length) {
+      grid.innerHTML = '<div class="empty-state">Geen producten gevonden.</div>';
+      return;
+    }
+    renderProducts(allProducts);
+  } catch {
+    grid.innerHTML = '<div class="empty-state">Fout bij laden van producten.</div>';
+  }
+}
+
+function renderProducts(products) {
+  const grid = document.getElementById('products-grid');
+  if (!products.length) {
+    grid.innerHTML = '<div class="empty-state" style="grid-column:1/-1;padding:40px;text-align:center;color:var(--grey-dk)">Geen producten gevonden voor deze zoekopdracht.</div>';
+    return;
+  }
+  grid.innerHTML = products.map(p => productCard(p, false)).join('');
+}
+
+function productCard(p, isOnDemand) {
+  const priceLabel = `<div class="product-prijs">${fmt(isOnDemand ? (p.verkoop_prijs || p.demand_prijs || 0) : p.verkoop_prijs)}</div>`;
+
+  const badge = isOnDemand ? '<span class="on-demand-badge">Op aanvraag</span>' : '';
+
+  const initials = (p.naam || '').split(' ').map(w => w[0] || '').join('').substring(0, 2).toUpperCase();
+  const photoHtml = p.foto
+    ? `<div class="product-photo"><img src="/${p.foto}" alt="${p.naam}" loading="lazy"></div>`
+    : `<div class="product-photo product-photo-placeholder">${initials}</div>`;
+
+  const levertijdHtml = isOnDemand
+    ? `<div class="levertijd-badge">🚚 Levertijd: ${p.levertijd || '10-12 werkdagen'}</div>`
+    : '';
+
+  const hasSizes = !isOnDemand && p.sizes && p.sizes.length > 0;
+  const sizeHtml = hasSizes
+    ? `<div class="size-label">Maat</div>
+       <div class="size-grid">
+         ${p.sizes.map(s => `
+           <button class="size-btn"
+             ${s.voorraad <= 0 ? 'disabled' : ''}
+             data-sku="${s.sku_key}"
+             data-maat="${s.maat}"
+             data-prijs="${p.verkoop_prijs}"
+             onclick="selectSize(this, '${p.item_id}', false)">
+             ${s.maat}
+           </button>`).join('')}
+       </div>`
+    : isOnDemand && p.sizes && p.sizes.length > 0
+      ? `<div class="size-label">Maat</div>
+         <div class="size-grid">
+           ${p.sizes.map(s => `
+             <button class="size-btn"
+               data-sku="${s.sku_key}" data-maat="${s.maat}"
+               onclick="selectOdSize(this, '${p.item_id}')">
+               ${s.maat}
+             </button>`).join('')}
+         </div>`
+      : '';
+
+  const addBtnId = `add-${p.item_id || p.sku_key}`;
+  const safeName = (p.naam || '').replace(/'/g, "\\'").replace(/"/g, '&quot;');
+  const addBtn = isOnDemand
+    ? `<button class="add-btn" id="${addBtnId}" disabled onclick="addOnDemandSelected('${p.item_id}', '${safeName}', ${p.verkoop_prijs || p.demand_prijs || 0})">
+         Aanvragen
+       </button>`
+    : `<button class="add-btn" id="${addBtnId}" disabled onclick="addToCart('${p.item_id}')">
+         Toevoegen
+       </button>`;
+
+  return `
+    <div class="product-card ${isOnDemand ? 'on-demand-card' : ''}"
+         data-type="${p.type || ''}" data-naam="${(p.naam || '').toLowerCase()}"
+         data-item="${p.item_id || p.sku_key}">
+      ${photoHtml}
+      <div>
+        ${badge}
+        <div class="product-naam">${p.naam}</div>
+        <div class="product-type">${p.type || ''}</div>
+      </div>
+      ${priceLabel}
+      ${levertijdHtml}
+      ${sizeHtml}
+      ${addBtn}
+    </div>`;
+}
+
+function selectSize(btn, itemId, isOnDemand) {
+  const card = btn.closest('.product-card');
+  card.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  const addBtn = document.getElementById(`add-${itemId}`);
+  if (addBtn) addBtn.disabled = false;
+}
+
+function addToCart(itemId) {
+  const card = document.querySelector(`[data-item="${itemId}"]`);
+  const selectedBtn = card.querySelector('.size-btn.selected');
+  if (!selectedBtn) return;
+
+  const sku_key = selectedBtn.dataset.sku;
+  const maat    = selectedBtn.dataset.maat;
+  const prijs   = parseFloat(selectedBtn.dataset.prijs);
+  const naam    = card.querySelector('.product-naam').textContent;
+
+  const existing = cart.find(i => i.sku_key === sku_key);
+  if (existing) {
+    existing.aantal++;
+  } else {
+    cart.push({ sku_key, naam, maat, prijs, aantal: 1, is_on_demand: 0 });
+  }
+
+  // Reset card state
+  card.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
+  document.getElementById(`add-${itemId}`).disabled = true;
+
+  renderCart();
+  showToast(`${naam} (maat ${maat}) toegevoegd!`, 'success');
+}
+
+function selectOdSize(btn, itemId) {
+  const card = btn.closest('.product-card');
+  card.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+  const addBtn = document.getElementById(`add-${itemId}`);
+  if (addBtn) addBtn.disabled = false;
+}
+
+function addOnDemandSelected(itemId, naam, prijs) {
+  const card = document.querySelector(`[data-item="${itemId}"]`);
+  const selectedBtn = card ? card.querySelector('.size-btn.selected') : null;
+  if (!selectedBtn) { showToast('Selecteer eerst een maat', 'error'); return; }
+  const sku_key = selectedBtn.dataset.sku;
+  const maat    = selectedBtn.dataset.maat;
+  const existing = cart.find(i => i.sku_key === sku_key);
+  if (existing) { existing.aantal++; }
+  else { cart.push({ sku_key, naam, maat, prijs, aantal: 1, is_on_demand: 1 }); }
+  renderCart();
+  showToast(`${naam} op aanvraag toegevoegd!`, 'success');
+}
+
+// ── ON-DEMAND ──────────────────────────────────────────────────────────────
+async function loadOnDemand() {
+  try {
+    const res = await fetch('/api/on-demand');
+    const products = await res.json();
+    if (!products.length) return;
+    document.getElementById('od-title').style.display = '';
+    const grid = document.getElementById('od-grid');
+    grid.style.display = 'grid';
+    grid.innerHTML = products.map(p => productCard(p, true)).join('');
+  } catch { /* no-op */ }
+}
+
+// ── FILTER & SEARCH ────────────────────────────────────────────────────────
+function setFilter(filter, btn) {
+  activeFilter = filter;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  filterProducts();
+}
+
+function filterProducts() {
+  const query = document.getElementById('search-input').value.toLowerCase().trim();
+
+  const filtered = allProducts.filter(p => {
+    const matchType = activeFilter === 'all' || p.type === activeFilter;
+    const matchQuery = !query || p.naam.toLowerCase().includes(query) || (p.type || '').toLowerCase().includes(query);
+    return matchType && matchQuery;
+  });
+
+  renderProducts(filtered);
+}
+
+// ── CART ───────────────────────────────────────────────────────────────────
+function renderCart() {
+  const el = document.getElementById('cart-items');
+  if (!cart.length) {
+    el.innerHTML = '<div class="cart-empty">Nog geen producten toegevoegd.</div>';
+  } else {
+    el.innerHTML = cart.map(item => `
+      <div class="cart-item">
+        <div>
+          <div class="cart-item-naam">${item.naam}${item.is_on_demand ? ' <span class="on-demand-badge" style="font-size:10px">Op aanvraag</span>' : ''}</div>
+          <div class="cart-item-sub">Maat ${item.maat}</div>
+        </div>
+        <div class="qty-controls">
+          <button class="qty-btn" onclick="updateQty('${item.sku_key}', -1)">−</button>
+          <span class="qty-num">${item.aantal}</span>
+          <button class="qty-btn" onclick="updateQty('${item.sku_key}', 1)">+</button>
+        </div>
+        <div class="cart-item-prijs">${fmt(item.prijs * item.aantal)}</div>
+        <button class="remove-btn" onclick="removeFromCart('${item.sku_key}')" title="Verwijderen">✕</button>
+      </div>`).join('');
+  }
+  updateSummary();
+  validateForm();
+}
+
+function updateQty(sku_key, delta) {
+  const item = cart.find(i => i.sku_key === sku_key);
+  if (!item) return;
+  item.aantal = Math.max(1, item.aantal + delta);
+  renderCart();
+}
+
+function removeFromCart(sku_key) {
+  cart = cart.filter(i => i.sku_key !== sku_key);
+  renderCart();
+}
+
+// ── SUMMARY & TOTALS ───────────────────────────────────────────────────────
+function getSubtotaal() {
+  return cart.reduce((sum, i) => sum + i.prijs * i.aantal, 0);
+}
+
+function getVerzendkosten() {
+  const sub = getSubtotaal();
+  if (sub >= SETTINGS.gratis_min) return 0;
+  const method = document.querySelector('input[name="verzendmethode"]:checked');
+  if (!method) return SETTINGS.dhl_kosten;
+  return method.value === 'PostNL' ? SETTINGS.postnl_kosten : SETTINGS.dhl_kosten;
+}
+
+function updateSummary() {
+  const subtotaal   = getSubtotaal();
+  const verzend     = getVerzendkosten();
+  const korting     = activeDiscount ? activeDiscount.kortingsbedrag : 0;
+  const totaal      = Math.max(0, subtotaal + verzend - korting);
+
+  document.getElementById('s-subtotaal').textContent = fmt(subtotaal);
+
+  if (subtotaal >= SETTINGS.gratis_min) {
+    document.getElementById('s-verzend').textContent = 'Gratis';
+    document.getElementById('free-shipping-notice').style.display = 'block';
+    document.getElementById('shipping-options').style.display = 'none';
+    document.getElementById('shipping-upsell').style.display = 'none';
+  } else {
+    const method = document.querySelector('input[name="verzendmethode"]:checked');
+    document.getElementById('s-verzend').textContent = fmt(verzend) + (method ? ` (${method.value})` : '');
+    document.getElementById('free-shipping-notice').style.display = 'none';
+    document.getElementById('shipping-options').style.display = 'flex';
+    document.getElementById('shipping-upsell').style.display = 'block';
+  }
+
+  const kortingRow = document.getElementById('s-korting-row');
+  if (korting > 0) {
+    kortingRow.style.display = 'flex';
+    document.getElementById('s-korting').textContent = `– ${fmt(korting)}`;
+  } else {
+    kortingRow.style.display = 'none';
+  }
+
+  document.getElementById('s-totaal').textContent = fmt(totaal);
+}
+
+function onShippingChange(label) {
+  document.querySelectorAll('.shipping-option').forEach(l => l.classList.remove('selected'));
+  label.classList.add('selected');
+  updateSummary();
+}
+
+// ── CUSTOMER AUTO-FILL ─────────────────────────────────────────────────────
+async function lookupCustomer() {
+  const ig = document.getElementById('instagram').value.trim();
+  if (!ig || ig === '@') return;
+  try {
+    const res = await fetch(`/api/customer?instagram=${encodeURIComponent(ig)}`);
+    const data = await res.json();
+    if (!data) return;
+    const fill = { naam: data.naam, email: data.email, telefoon: data.telefoon,
+                   adres: data.adres, postcode: data.postcode, stad: data.stad };
+    for (const [id, val] of Object.entries(fill)) {
+      if (val) document.getElementById(id).value = val;
+    }
+    if (data.land) document.getElementById('land').value = data.land;
+    const toast = document.getElementById('autofill-toast');
+    toast.textContent = 'Welkom terug! Je gegevens zijn ingevuld ✓';
+    toast.style.display = 'block';
+    setTimeout(() => { toast.style.display = 'none'; }, 4000);
+    validateForm();
+  } catch { /* no-op */ }
+}
+
+// ── DISCOUNT ───────────────────────────────────────────────────────────────
+async function applyDiscount() {
+  const code = document.getElementById('discount-input').value.trim().toUpperCase();
+  const fb   = document.getElementById('discount-feedback');
+  if (!code) return;
+
+  const subtotaal = getSubtotaal();
+  const instagram = (document.getElementById('instagram')?.value || '').trim();
+  try {
+    const res  = await fetch(`/api/discount?code=${encodeURIComponent(code)}&subtotal=${subtotaal}&instagram=${encodeURIComponent(instagram)}`);
+    const data = await res.json();
+    fb.style.display = 'block';
+    if (data.valid) {
+      fb.className = 'discount-feedback ok';
+      fb.textContent = data.bericht;
+      activeDiscount = { code, type: data.type, kortingsbedrag: data.kortingsbedrag };
+    } else {
+      fb.className = 'discount-feedback err';
+      fb.textContent = data.bericht;
+      activeDiscount = null;
+    }
+    updateSummary();
+  } catch {
+    fb.style.display = 'block';
+    fb.className = 'discount-feedback err';
+    fb.textContent = 'Fout bij controleren van kortingscode.';
+  }
+}
+
+// ── VALIDATION ─────────────────────────────────────────────────────────────
+function validateForm() {
+  const req = ['instagram', 'naam', 'email', 'adres', 'postcode', 'stad'];
+  const allFilled = req.every(id => document.getElementById(id).value.trim());
+  const landOk    = document.getElementById('land').value !== '';
+  const hasItems  = cart.length > 0;
+  const hasShip   = getSubtotaal() >= SETTINGS.gratis_min ||
+                    !!document.querySelector('input[name="verzendmethode"]:checked');
+  document.getElementById('submit-btn').disabled = !(allFilled && landOk && hasItems && hasShip);
+}
+
+// ── SUBMIT ─────────────────────────────────────────────────────────────────
+async function submitOrder() {
+  if (document.getElementById('submit-btn').disabled) return;
+
+  const btn = document.getElementById('submit-btn');
+  btn.disabled = true;
+  btn.classList.add('loading');
+  btn.textContent = 'Bestelling verwerken...';
+
+  const subtotaal = getSubtotaal();
+  const method = document.querySelector('input[name="verzendmethode"]:checked');
+  const verzendmethode = subtotaal >= SETTINGS.gratis_min ? 'Gratis' : (method ? method.value : 'DHL');
+
+  const payload = {
+    naam:          document.getElementById('naam').value.trim(),
+    instagram:     document.getElementById('instagram').value.trim(),
+    email:         document.getElementById('email').value.trim(),
+    telefoon:      document.getElementById('telefoon').value.trim(),
+    adres:         document.getElementById('adres').value.trim(),
+    postcode:      document.getElementById('postcode').value.trim(),
+    stad:          document.getElementById('stad').value.trim(),
+    land:          document.getElementById('land').value,
+    opmerking:     document.getElementById('opmerking').value.trim(),
+    verzendmethode,
+    actiecode:     activeDiscount ? activeDiscount.code : '',
+    items: cart.map(i => ({
+      sku_key:      i.sku_key,
+      naam:         i.naam,
+      maat:         i.maat,
+      prijs:        i.prijs,
+      aantal:       i.aantal,
+      is_on_demand: i.is_on_demand,
+    })),
+  };
+
+  try {
+    const res    = await fetch('/submit-order', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const result = await res.json();
+
+    if (result.success) {
+      window.location.href = `/success/${result.bestelnummer}`;
+    } else {
+      showToast(result.error || 'Er is een fout opgetreden.', 'error');
+      btn.disabled = false;
+      btn.classList.remove('loading');
+      btn.textContent = 'Bestelling plaatsen →';
+    }
+  } catch {
+    showToast('Verbindingsfout. Probeer opnieuw.', 'error');
+    btn.disabled = false;
+    btn.classList.remove('loading');
+    btn.textContent = 'Bestelling plaatsen →';
+  }
+}
+
+// ── TOAST ──────────────────────────────────────────────────────────────────
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  setTimeout(() => { t.className = 'toast'; }, 3000);
+}
+</script>
+</body>
+</html>

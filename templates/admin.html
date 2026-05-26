@@ -1,0 +1,1263 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShoppyBrand Admin</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+{% if show_login %}
+<!-- ══════════════════════ LOGIN PAGE ══════════════════════ -->
+<div class="login-page">
+  <div class="login-card">
+    <img src="{{ url_for('static', filename='logo.jpg') }}" alt="ShoppyBrand" class="logo">
+    <h2>Admin Panel</h2>
+    <p class="sub">ShoppyBrand beheer</p>
+    {% if login_error %}
+    <div class="login-error">Onjuist wachtwoord. Probeer opnieuw.</div>
+    {% endif %}
+    <form method="POST">
+      <input type="password" name="password" class="form-control" placeholder="Wachtwoord" autofocus>
+      <button type="submit" class="submit-btn" style="margin-top:4px">Inloggen</button>
+    </form>
+  </div>
+</div>
+
+{% else %}
+<!-- ══════════════════════ ADMIN PANEL ══════════════════════ -->
+<div class="admin-body">
+
+  <!-- Sidebar -->
+  <nav class="admin-sidebar">
+    <div class="admin-logo">
+      <img src="{{ url_for('static', filename='logo.jpg') }}" alt="">
+      <span>ADMIN</span>
+    </div>
+    <div class="admin-nav">
+      <div class="nav-item active" onclick="showTab('overview', this)">
+        <span class="nav-icon">📊</span> Overzicht
+      </div>
+      <div class="nav-item" onclick="showTab('voorraad', this)">
+        <span class="nav-icon">📦</span> Voorraad
+      </div>
+      <div class="nav-item" onclick="showTab('op-aanvraag', this)">
+        <span class="nav-icon">🔖</span> Op Aanvraag
+      </div>
+      <div class="nav-item" onclick="showTab('bestellingen', this)">
+        <span class="nav-icon">🛒</span> Bestellingen
+      </div>
+      <div class="nav-item" onclick="showTab('klanten', this)">
+        <span class="nav-icon">👥</span> Klanten
+      </div>
+      <div class="nav-item" onclick="showTab('kortingscodes', this)">
+        <span class="nav-icon">🎟️</span> Kortingscodes
+      </div>
+      <div class="nav-item" onclick="showTab('instellingen', this)">
+        <span class="nav-icon">⚙️</span> Instellingen
+      </div>
+    </div>
+    <div class="admin-footer">
+      <a href="/admin/logout">
+        <button class="logout-btn">🚪 Uitloggen</button>
+      </a>
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <div class="admin-content">
+
+    <!-- ── 1. OVERZICHT ─────────────────────────────────────────── -->
+    <div class="admin-tab active" id="tab-overview">
+      <div class="admin-page-title">📊 Overzicht</div>
+      <div class="stats-grid" id="stats-grid">
+        <div class="stat-card"><div class="stat-label">Vandaag omzet</div><div class="stat-value green" id="st-today">...</div></div>
+        <div class="stat-card"><div class="stat-label">Deze week</div><div class="stat-value gold" id="st-week">...</div></div>
+        <div class="stat-card"><div class="stat-label">Deze maand</div><div class="stat-value gold" id="st-month">...</div></div>
+        <div class="stat-card"><div class="stat-label">Onbetaald openstaand</div><div class="stat-value red" id="st-pending">...</div></div>
+        <div class="stat-card"><div class="stat-label">Totaal bestellingen</div><div class="stat-value" id="st-total">...</div></div>
+        <div class="stat-card"><div class="stat-label">Lage voorraad</div><div class="stat-value red" id="st-lowstock">...</div></div>
+      </div>
+
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Laatste 5 bestellingen</div>
+        </div>
+        <table class="admin-table">
+          <thead><tr>
+            <th>#</th><th>Klant</th><th>Datum</th>
+            <th>Totaal</th><th>Status</th><th>Betaling</th>
+          </tr></thead>
+          <tbody id="last-orders-body"><tr><td colspan="6" style="text-align:center;padding:24px;color:var(--grey-dk)">Laden...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── 2. VOORRAAD ──────────────────────────────────────────── -->
+    <div class="admin-tab" id="tab-voorraad">
+      <div class="admin-page-title">📦 Voorraad</div>
+
+      <!-- Filters -->
+      <div class="admin-filter-row" id="stock-filter-row">
+        <button class="admin-filter-btn active" onclick="filterStock('all', this)">Alle</button>
+        <button class="admin-filter-btn" onclick="filterStock('Sneakers', this)">Sneakers</button>
+        <button class="admin-filter-btn" onclick="filterStock('Tracksuits', this)">Tracksuits</button>
+        <button class="admin-filter-btn" onclick="filterStock('Horloges', this)">Horloges</button>
+        <button class="admin-filter-btn" onclick="filterStock('beschikbaar', this)">Beschikbaar</button>
+      </div>
+
+      <!-- Add product form -->
+      <div class="admin-card" style="margin-bottom:16px">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Producten</div>
+          <button class="admin-btn admin-btn-gold admin-btn-sm" onclick="toggleAddProduct()">+ Product toevoegen</button>
+        </div>
+        <div id="add-product-form" style="display:none;border-bottom:1px solid var(--grey-md)">
+          <div class="admin-form-grid">
+            <div class="admin-form-group"><label>Item-ID *</label>
+              <input type="text" id="np-item" class="form-control" placeholder="bijv. SB0001YZ"></div>
+            <div class="admin-form-group"><label>Naam *</label>
+              <input type="text" id="np-naam" class="form-control"></div>
+            <div class="admin-form-group"><label>Type *</label>
+              <select id="np-type" class="form-control">
+                <option value="Sneakers">Sneakers</option>
+                <option value="Tracksuits">Tracksuits</option>
+                <option value="Horloges">Horloges</option>
+                <option value="Accessoires">Accessoires</option>
+              </select></div>
+            <div class="admin-form-group"><label>Inkoopprijs (€)</label>
+              <input type="number" id="np-inkoop" class="form-control" step="0.01"></div>
+            <div class="admin-form-group"><label>Verkoopprijs (€)</label>
+              <input type="number" id="np-verkoop" class="form-control" step="0.01"></div>
+          </div>
+          <div style="padding:0 20px 12px">
+            <div class="pgc-section-label">Maten</div>
+            <div id="np-sizes-container" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
+            <button class="admin-btn admin-btn-sm admin-btn-gold" type="button" onclick="addNpSizeRow()">+ Maat toevoegen</button>
+          </div>
+          <div style="padding:0 20px 16px;display:flex;gap:8px">
+            <button class="admin-btn admin-btn-primary" onclick="saveNewProductGroup()">Opslaan</button>
+            <button class="admin-btn" onclick="toggleAddProduct()" style="background:var(--grey)">Annuleren</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Grouped stock container -->
+      <div id="stock-grouped">
+        <div style="text-align:center;padding:40px;color:var(--grey-dk)">Laden...</div>
+      </div>
+    </div>
+
+    <!-- ── 2b. OP AANVRAAG ────────────────────────────────────── -->
+    <div class="admin-tab" id="tab-op-aanvraag">
+      <div class="admin-page-title">🔖 Op Aanvraag producten</div>
+
+      <div class="admin-card" style="margin-bottom:16px">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Op Aanvraag producten</div>
+          <button class="admin-btn admin-btn-gold admin-btn-sm" onclick="toggleAddOd()">+ Product toevoegen</button>
+        </div>
+        <div id="add-od-form" style="display:none;border-bottom:1px solid var(--grey-md)">
+          <div class="admin-form-grid">
+            <div class="admin-form-group"><label>Item-ID (SKU-base) *</label>
+              <input type="text" id="od-item-id" class="form-control" placeholder="bijv. OD-nike-dunk"></div>
+            <div class="admin-form-group"><label>Naam *</label>
+              <input type="text" id="od-naam" class="form-control"></div>
+            <div class="admin-form-group"><label>Type</label>
+              <select id="od-type" class="form-control">
+                <option>Sneakers</option><option>Tracksuits</option>
+                <option>Horloges</option><option>Accessoires</option>
+              </select></div>
+            <div class="admin-form-group"><label>Vraagprijs – wat jij betaalt (€) *</label>
+              <input type="number" id="od-demand" class="form-control" step="0.01" min="0"></div>
+            <div class="admin-form-group"><label>Verkoopprijs – wat klant betaalt (€) *</label>
+              <input type="number" id="od-verkoop" class="form-control" step="0.01" min="0"></div>
+          </div>
+          <div style="padding:0 20px 12px">
+            <div class="pgc-section-label">Maten</div>
+            <div id="od-np-sizes-container" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px"></div>
+            <button class="admin-btn admin-btn-sm admin-btn-gold" type="button" onclick="addOdNpSizeRow()">+ Maat toevoegen</button>
+          </div>
+          <div style="padding:0 20px 16px;display:flex;gap:8px">
+            <button class="admin-btn admin-btn-primary" onclick="saveOdProduct()">Opslaan</button>
+            <button class="admin-btn" onclick="toggleAddOd()" style="background:var(--grey)">Annuleren</button>
+          </div>
+        </div>
+      </div>
+
+      <div id="od-cards-container">
+        <div style="text-align:center;padding:40px;color:var(--grey-dk)">Laden...</div>
+      </div>
+    </div>
+
+    <!-- ── 3. BESTELLINGEN ──────────────────────────────────────── -->
+    <div class="admin-tab" id="tab-bestellingen">
+      <div class="admin-page-title">🛒 Bestellingen</div>
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Alle bestellingen</div>
+        </div>
+        <table class="admin-table" id="orders-table">
+          <thead><tr>
+            <th>#</th><th>Klant</th><th>Instagram</th><th>Datum</th>
+            <th>Totaal</th><th>Bestellingstatus</th><th>Betaalstatus</th><th>Actie</th>
+          </tr></thead>
+          <tbody id="orders-body"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--grey-dk)">Laden...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── 4. KLANTEN ───────────────────────────────────────────── -->
+    <div class="admin-tab" id="tab-klanten">
+      <div class="admin-page-title">👥 Klanten</div>
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Alle klanten</div>
+        </div>
+        <table class="admin-table">
+          <thead><tr>
+            <th>Klant-ID</th><th>Naam</th><th>Instagram</th><th>Telefoon</th><th>E-mail</th>
+            <th>Bestellingen</th><th>Totaal uitgegeven</th><th>Laatste bestelling</th>
+          </tr></thead>
+          <tbody id="customers-body"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--grey-dk)">Laden...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── 5. KORTINGSCODES ─────────────────────────────────────── -->
+    <div class="admin-tab" id="tab-kortingscodes">
+      <div class="admin-page-title">🎟️ Kortingscodes</div>
+      <div class="admin-card" style="margin-bottom:20px">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Nieuwe kortingscode</div>
+        </div>
+        <div class="admin-form-grid">
+          <div class="admin-form-group">
+            <label>Code *</label>
+            <input type="text" id="nc-code" class="form-control" placeholder="ZOMERKORTING" style="text-transform:uppercase">
+          </div>
+          <div class="admin-form-group">
+            <label>Type *</label>
+            <select id="nc-type" class="form-control" onchange="onDiscountTypeChange()">
+              <option value="PERCENTAGE">Percentage (%)</option>
+              <option value="VAST_BEDRAG">Vast bedrag (€)</option>
+              <option value="GRATIS_VERZENDING">Gratis verzending</option>
+            </select>
+          </div>
+          <div class="admin-form-group" id="nc-waarde-wrap">
+            <label>Waarde</label>
+            <input type="number" id="nc-waarde" class="form-control" placeholder="10" step="0.01" min="0">
+          </div>
+          <div class="admin-form-group">
+            <label>Min. bestelbedrag (€)</label>
+            <input type="number" id="nc-min" class="form-control" placeholder="0" step="0.01" min="0">
+          </div>
+          <div class="admin-form-group">
+            <label>Vervaldatum</label>
+            <input type="date" id="nc-datum" class="form-control">
+          </div>
+          <div class="admin-form-group" style="justify-content:flex-end">
+            <label>&nbsp;</label>
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:14px;text-transform:none;letter-spacing:0">
+              <input type="checkbox" id="nc-eenmalig" style="width:16px;height:16px;accent-color:var(--black)">
+              Eenmalig gebruik
+            </label>
+          </div>
+        </div>
+        <div style="padding:0 20px 16px">
+          <button class="admin-btn admin-btn-primary" onclick="saveDiscount()">Code aanmaken</button>
+        </div>
+      </div>
+
+      <div class="admin-card">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Actieve codes</div>
+        </div>
+        <table class="admin-table">
+          <thead><tr>
+            <th>Code</th><th>Type</th><th>Waarde</th><th>Min. bedrag</th>
+            <th>Vervaldatum</th><th>Gebruik</th><th>Eenmalig</th><th>Status</th><th>Acties</th>
+          </tr></thead>
+          <tbody id="discounts-body"><tr><td colspan="9" style="text-align:center;padding:24px;color:var(--grey-dk)">Laden...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- ── 6. INSTELLINGEN ──────────────────────────────────────── -->
+    <div class="admin-tab" id="tab-instellingen">
+      <div class="admin-page-title">⚙️ Instellingen</div>
+      <div class="admin-card" style="max-width:640px">
+        <div class="admin-card-header">
+          <div class="admin-card-title">Winkelinstellingen</div>
+        </div>
+        <div class="settings-form">
+
+          <!-- ING Payment Link - prominently highlighted -->
+          <div class="settings-highlight">
+            <div class="admin-form-group">
+              <label style="font-size:13px;font-weight:800;color:var(--black);text-transform:none;letter-spacing:0">
+                💳 ING Betaallink (belangrijkste instelling!)
+              </label>
+              <input type="url" id="s-ing" class="form-control" placeholder="https://betaalverzoek.ing.nl/...">
+              <small style="color:var(--grey-dk);font-size:12px">Klanten zien deze link na het plaatsen van een bestelling.</small>
+            </div>
+          </div>
+
+          <div class="admin-form-group">
+            <label>PayPal gebruikersnaam</label>
+            <input type="text" id="s-paypal" class="form-control" placeholder="shoppybrand">
+          </div>
+
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:14px">
+            <div class="admin-form-group">
+              <label>DHL verzendkosten (€)</label>
+              <input type="number" id="s-dhl" class="form-control" step="0.01" min="0">
+            </div>
+            <div class="admin-form-group">
+              <label>PostNL verzendkosten (€)</label>
+              <input type="number" id="s-postnl" class="form-control" step="0.01" min="0">
+            </div>
+          </div>
+
+          <div class="admin-form-group">
+            <label>Gratis verzending vanaf (€)</label>
+            <input type="number" id="s-gratis" class="form-control" step="1" min="0">
+          </div>
+
+          <div style="display:flex;gap:8px">
+            <button class="admin-btn admin-btn-primary" onclick="saveSettings()">Instellingen opslaan</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /admin-content -->
+</div><!-- /admin-body -->
+
+<div id="toast" class="toast"></div>
+
+<script>
+// ── HELPERS ────────────────────────────────────────────────────────────────
+const fmt = (n) => '€ ' + parseFloat(n||0).toFixed(2).replace('.', ',');
+
+function showToast(msg, type = 'info') {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = `toast ${type} show`;
+  setTimeout(() => { t.className = 'toast'; }, 3500);
+}
+
+async function apiFetch(url, opts) {
+  const res = await fetch(url, opts);
+  return res.json();
+}
+
+function statusBadge(s) {
+  const map = {
+    'Ontvangen':  'badge-blue',
+    'In behandeling': 'badge-orange',
+    'Verzonden':  'badge-gold',
+    'Bezorgd':    'badge-green',
+    'Geannuleerd':'badge-red',
+    'Betaald':    'badge-green',
+    'Onbetaald':  'badge-red',
+  };
+  return `<span class="badge ${map[s] || 'badge-grey'}">${s}</span>`;
+}
+
+function fmtDate(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  return d.toLocaleDateString('nl-NL', { day:'2-digit', month:'2-digit', year:'numeric' });
+}
+
+// ── TABS ───────────────────────────────────────────────────────────────────
+const loaded = {};
+function showTab(name, navEl) {
+  document.querySelectorAll('.admin-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById(`tab-${name}`).classList.add('active');
+  navEl.classList.add('active');
+  if (!loaded[name]) { loaded[name] = true; loadTab(name); }
+}
+
+function loadTab(name) {
+  switch (name) {
+    case 'overview':      loadOverview();     break;
+    case 'voorraad':      loadVoorraad();     break;
+    case 'op-aanvraag':   loadOpAanvraag();   break;
+    case 'bestellingen':  loadBestellingen(); break;
+    case 'klanten':       loadKlanten();      break;
+    case 'kortingscodes': loadDiscounts();    break;
+    case 'instellingen':  loadSettings();     break;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => loadOverview());
+
+// ── 1. OVERVIEW ────────────────────────────────────────────────────────────
+async function loadOverview() {
+  const d = await apiFetch('/admin/api/overview');
+  document.getElementById('st-today').textContent   = fmt(d.today_revenue);
+  document.getElementById('st-week').textContent    = fmt(d.week_revenue);
+  document.getElementById('st-month').textContent   = fmt(d.month_revenue);
+  document.getElementById('st-pending').textContent = fmt(d.pending_payment);
+  document.getElementById('st-total').textContent   = d.total_orders;
+  document.getElementById('st-lowstock').textContent = d.low_stock_count;
+
+  const tb = document.getElementById('last-orders-body');
+  if (!d.last_orders.length) {
+    tb.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--grey-dk)">Nog geen bestellingen</td></tr>';
+    return;
+  }
+  tb.innerHTML = d.last_orders.map(o => `
+    <tr>
+      <td><strong>#${o.bestelnummer}</strong></td>
+      <td>${o.klant_naam || '–'}</td>
+      <td>${fmtDate(o.besteldatum)}</td>
+      <td><strong>${fmt(o.totaalbedrag)}</strong></td>
+      <td>${statusBadge(o.bestellingstatus)}</td>
+      <td>${statusBadge(o.betaalstatus)}</td>
+    </tr>`).join('');
+}
+
+// ── 2. VOORRAAD (grouped) ──────────────────────────────────────────────────
+let groupedData = [];
+let stockFilter = 'all';
+
+async function loadVoorraad() {
+  const d = await apiFetch('/admin/api/products-grouped');
+  groupedData = d.groups || [];
+  renderGroupedCards();
+}
+
+function filterStock(f, btn) {
+  stockFilter = f;
+  document.querySelectorAll('#stock-filter-row .admin-filter-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderGroupedCards();
+}
+
+function safeId(s) { return (s || '').replace(/[^a-z0-9]/gi, '_'); }
+
+function sizeBadgeHtml(maat, voorraad) {
+  const bg = voorraad === 0 ? '#dc3545' : voorraad === 1 ? '#fd7e14' : '#198754';
+  return `<span class="size-badge" style="background:${bg}" title="${voorraad} op voorraad">${maat}</span>`;
+}
+
+function renderGroupedCards() {
+  let filtered = groupedData;
+  if (stockFilter === 'beschikbaar') filtered = groupedData.filter(g => g.sizes.some(s => s.voorraad >= 1));
+  else if (stockFilter !== 'all')    filtered = groupedData.filter(g => g.type === stockFilter);
+
+  const container = document.getElementById('stock-grouped');
+  if (!filtered.length) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--grey-dk)">Geen producten gevonden voor dit filter.</div>';
+    return;
+  }
+  container.innerHTML = filtered.map(g => renderProductCard(g)).join('');
+}
+
+function renderProductCard(g) {
+  const sid        = safeId(g.item_id);
+  const sizesHtml  = (g.sizes || []).map(s => sizeBadgeHtml(s.maat, s.voorraad)).join('');
+  const foto       = g.foto || (g.sizes && g.sizes[0] && g.sizes[0].foto);
+  const initials   = (g.naam || '').split(' ').map(w => w[0] || '').join('').substring(0, 2).toUpperCase();
+  const photoHtml  = foto
+    ? `<img src="/${foto}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;flex-shrink:0">`
+    : `<div style="width:64px;height:64px;background:#f0f0f0;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px;color:#aaa;flex-shrink:0">${initials}</div>`;
+  const totalStock = (g.sizes || []).reduce((s, x) => s + (x.voorraad || 0), 0);
+  const stockColor = totalStock === 0 ? '#dc3545' : totalStock <= 2 ? '#fd7e14' : '#198754';
+  const safeNaam   = (g.naam || '').replace(/'/g, "\\'");
+  const safeItemId = (g.item_id || '').replace(/'/g, "\\'");
+
+  return `
+<div class="product-group-card" id="pgc-${sid}">
+  <div class="pgc-view" id="pgcv-${sid}">
+    <div class="pgc-header">
+      ${photoHtml}
+      <div style="flex:1;min-width:0">
+        <div class="pgc-naam">${g.naam || '–'}</div>
+        <div class="pgc-meta">
+          <span class="pgc-type-badge">${g.type || '–'}</span>
+          <span class="pgc-prijs">Ink: ${fmt(g.aankoop_prijs)} &nbsp;|&nbsp; Vkp: ${fmt(g.verkoop_prijs)}</span>
+          <span style="font-size:11px;font-weight:700;color:${stockColor};margin-left:8px">${totalStock} stuks totaal</span>
+        </div>
+        <div style="font-size:11px;color:#999;margin-bottom:4px">SKU: <code style="font-size:11px">${g.item_id}</code></div>
+        <div class="pgc-sizes">${sizesHtml}</div>
+      </div>
+    </div>
+    <div class="pgc-actions">
+      <button class="admin-btn admin-btn-sm" style="background:var(--grey-md)"
+        onclick="document.getElementById('pgc-photo-${sid}').click()">📷 Foto</button>
+      <input type="file" id="pgc-photo-${sid}" style="display:none" accept=".jpg,.jpeg,.png,.webp"
+        onchange="submitGroupPhoto(this,'${safeItemId}')">
+      <button class="admin-btn admin-btn-sm" style="background:var(--grey-md)" onclick="editProductGroup('${safeItemId}')">✏️ Bewerken</button>
+      <button class="admin-btn admin-btn-sm admin-btn-danger" onclick="deleteProductGroup('${safeItemId}','${safeNaam}')">🗑️ Verwijderen</button>
+    </div>
+  </div>
+  <div class="pgc-edit" id="pgce-${sid}" style="display:none"></div>
+</div>`;
+}
+
+function editProductGroup(item_id) {
+  const g = groupedData.find(x => x.item_id === item_id);
+  if (!g) return;
+  const sid      = safeId(item_id);
+  const typeOpts = ['Sneakers','Tracksuits','Horloges','Accessoires']
+    .map(t => `<option${g.type === t ? ' selected' : ''}>${t}</option>`).join('');
+  const sizeRows = (g.sizes || []).map(s => `
+    <div class="pgc-size-edit-row" id="ser-${safeId(s.sku_key)}">
+      <span class="pgc-size-maat-label">${s.maat}</span>
+      <input type="number" class="pgc-vrd-input" id="vrd-${safeId(s.sku_key)}" value="${s.voorraad}" min="0">
+      <button class="pgc-size-del" onclick="deleteSize('${s.sku_key}','${s.maat}')" title="Verwijder maat">🗑️</button>
+    </div>`).join('');
+
+  document.getElementById(`pgcv-${sid}`).style.display = 'none';
+  const editDiv = document.getElementById(`pgce-${sid}`);
+  editDiv.style.display = 'block';
+  editDiv.innerHTML = `
+    <div class="pgc-edit-form">
+      <div class="pgc-section-label">Productinfo</div>
+      <div class="pgc-edit-grid">
+        <div class="admin-form-group"><label>Item-ID (SKU-basis)</label>
+          <input type="text" class="form-control" id="eg-iid-${sid}" value="${(g.item_id||'').replace(/"/g,'&quot;')}">
+          <div style="font-size:10px;color:#e65100;margin-top:3px">⚠️ Wijzig SKU alleen indien nodig</div>
+        </div>
+        <div class="admin-form-group"><label>Naam *</label>
+          <input type="text" class="form-control" id="eg-naam-${sid}" value="${(g.naam||'').replace(/"/g,'&quot;')}"></div>
+        <div class="admin-form-group"><label>Type</label>
+          <select class="form-control" id="eg-type-${sid}">${typeOpts}</select></div>
+        <div class="admin-form-group"><label>Inkoopprijs (€)</label>
+          <input type="number" class="form-control" id="eg-ink-${sid}" value="${g.aankoop_prijs||0}" step="0.01"></div>
+        <div class="admin-form-group"><label>Verkoopprijs (€)</label>
+          <input type="number" class="form-control" id="eg-vkp-${sid}" value="${g.verkoop_prijs||0}" step="0.01"></div>
+      </div>
+      <div class="pgc-section-label" style="margin-top:14px">Maten &amp; voorraad</div>
+      <div class="pgc-size-edit-grid" id="seg-${sid}">${sizeRows}</div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input type="text" class="form-control" id="new-maat-${sid}" placeholder="Nieuwe maat (bijv. 42)" style="width:200px">
+        <input type="number" class="form-control" id="new-vrd-${sid}" placeholder="Voorraad" value="0" min="0" style="width:100px">
+        <button class="admin-btn admin-btn-sm admin-btn-gold" onclick="addSize('${item_id}')">+ Maat toevoegen</button>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="admin-btn admin-btn-primary" onclick="saveProductGroup('${item_id}')">Opslaan</button>
+        <button class="admin-btn" style="background:var(--grey-md)" onclick="cancelEditGroup('${item_id}')">Annuleren</button>
+      </div>
+    </div>`;
+}
+
+function cancelEditGroup(item_id) {
+  const sid = safeId(item_id);
+  document.getElementById(`pgcv-${sid}`).style.display = '';
+  document.getElementById(`pgce-${sid}`).style.display = 'none';
+}
+
+async function saveProductGroup(item_id) {
+  const sid     = safeId(item_id);
+  const g       = groupedData.find(x => x.item_id === item_id);
+  if (!g) return;
+  const new_iid = (document.getElementById(`eg-iid-${sid}`)?.value || item_id).trim();
+  const naam    = (document.getElementById(`eg-naam-${sid}`)?.value || '').trim();
+  const type_   = document.getElementById(`eg-type-${sid}`)?.value || '';
+  const aankoop = parseFloat(document.getElementById(`eg-ink-${sid}`)?.value) || 0;
+  const verkoop = parseFloat(document.getElementById(`eg-vkp-${sid}`)?.value) || 0;
+  if (!naam) { showToast('Naam is verplicht', 'error'); return; }
+
+  // Rename item_id if changed
+  if (new_iid && new_iid !== item_id) {
+    const ri = await apiFetch('/admin/api/update-item-id', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({old_item_id: item_id, new_item_id: new_iid})
+    });
+    if (!ri.success) { showToast(ri.error || 'Fout bij SKU hernoemen', 'error'); return; }
+    // Update in-memory data to reflect new sku_keys
+    g.item_id = new_iid;
+    for (const s of (g.sizes || [])) {
+      s.sku_key = s.maat ? `${new_iid}-${s.maat}` : new_iid;
+    }
+  }
+
+  const effective_id = g.item_id;
+
+  for (const s of (g.sizes || [])) {
+    const inp    = document.getElementById(`vrd-${safeId(s.sku_key)}`);
+    if (!inp) continue;
+    const newVrd = parseInt(inp.value) || 0;
+    if (newVrd !== s.voorraad) {
+      await apiFetch('/admin/api/update-size-stock', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({sku_key: s.sku_key, voorraad: newVrd})
+      });
+      s.voorraad = newVrd;
+    }
+  }
+
+  const r = await apiFetch('/admin/api/update-product-group', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({item_id: effective_id, naam, type: type_, aankoop_prijs: aankoop, verkoop_prijs: verkoop})
+  });
+  if (r.success) {
+    g.naam = naam; g.type = type_; g.aankoop_prijs = aankoop; g.verkoop_prijs = verkoop;
+    showToast('Product opgeslagen!', 'success');
+    renderGroupedCards();
+  } else { showToast(r.error || 'Fout bij opslaan', 'error'); }
+}
+
+async function submitGroupPhoto(input, item_id) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { showToast('Bestand te groot (max 2MB)', 'error'); return; }
+  const fd = new FormData();
+  fd.append('item_id', item_id);
+  fd.append('file', file);
+  showToast('Foto uploaden...', 'info');
+  try {
+    const res = await fetch('/admin/api/upload-photo', {method: 'POST', body: fd});
+    const r   = await res.json();
+    if (r.success) {
+      const g = groupedData.find(x => x.item_id === item_id);
+      if (g) g.foto = r.foto;
+      renderGroupedCards();
+      showToast('Foto opgeslagen!', 'success');
+    } else { showToast(r.error || 'Fout bij uploaden', 'error'); }
+  } catch { showToast('Verbindingsfout', 'error'); }
+}
+
+async function deleteSize(sku_key, maat) {
+  if (!confirm(`Maat "${maat}" verwijderen?`)) return;
+  const r = await apiFetch('/admin/api/delete-size', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sku_key})
+  });
+  if (r.success) {
+    for (const g of groupedData) {
+      const idx = g.sizes.findIndex(s => s.sku_key === sku_key);
+      if (idx !== -1) { g.sizes.splice(idx, 1); break; }
+    }
+    const row = document.getElementById(`ser-${safeId(sku_key)}`);
+    if (row) row.remove();
+    showToast(`Maat ${maat} verwijderd`, 'success');
+  } else { showToast(r.error || 'Fout', 'error'); }
+}
+
+async function addSize(item_id) {
+  const sid      = safeId(item_id);
+  const maat     = (document.getElementById(`new-maat-${sid}`)?.value || '').trim();
+  const voorraad = parseInt(document.getElementById(`new-vrd-${sid}`)?.value) || 0;
+  if (!maat) { showToast('Voer een maat in', 'error'); return; }
+  const r = await apiFetch('/admin/api/add-size', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({item_id, maat, voorraad})
+  });
+  if (r.success) {
+    const g = groupedData.find(x => x.item_id === item_id);
+    if (g) g.sizes.push({sku_key: r.sku_key, maat, voorraad});
+    const segDiv = document.getElementById(`seg-${sid}`);
+    if (segDiv) {
+      const newRow = document.createElement('div');
+      newRow.className = 'pgc-size-edit-row';
+      newRow.id = `ser-${safeId(r.sku_key)}`;
+      newRow.innerHTML = `
+        <span class="pgc-size-maat-label">${maat}</span>
+        <input type="number" class="pgc-vrd-input" id="vrd-${safeId(r.sku_key)}" value="${voorraad}" min="0">
+        <button class="pgc-size-del" onclick="deleteSize('${r.sku_key}','${maat}')" title="Verwijder maat">🗑️</button>`;
+      segDiv.appendChild(newRow);
+    }
+    document.getElementById(`new-maat-${sid}`).value = '';
+    document.getElementById(`new-vrd-${sid}`).value  = '0';
+    showToast(`Maat ${maat} toegevoegd!`, 'success');
+  } else { showToast(r.error || 'Fout', 'error'); }
+}
+
+async function deleteProductGroup(item_id, naam) {
+  if (!confirm(`Weet je zeker dat je "${naam}" en alle maten wil verwijderen?`)) return;
+  const g = groupedData.find(x => x.item_id === item_id);
+  if (!g) return;
+  for (const s of (g.sizes || [])) {
+    await apiFetch('/admin/api/delete-size', {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sku_key: s.sku_key})
+    });
+  }
+  groupedData = groupedData.filter(x => x.item_id !== item_id);
+  renderGroupedCards();
+  showToast('Product verwijderd', 'success');
+}
+
+function toggleAddProduct() {
+  const f = document.getElementById('add-product-form');
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+function addNpSizeRow() {
+  const container = document.getElementById('np-sizes-container');
+  const row = document.createElement('div');
+  row.className = 'np-size-row';
+  row.innerHTML = `
+    <input type="text" class="form-control np-size-maat" placeholder="Maat (bijv. 42)" style="width:180px">
+    <input type="number" class="form-control np-size-vrd" placeholder="Voorraad" value="0" min="0" style="width:100px">
+    <button type="button" class="admin-btn admin-btn-sm admin-btn-danger" onclick="this.parentElement.remove()">✕</button>`;
+  container.appendChild(row);
+}
+
+async function saveNewProductGroup() {
+  const item_id = (document.getElementById('np-item')?.value || '').trim();
+  const naam    = (document.getElementById('np-naam')?.value  || '').trim();
+  const type_   = document.getElementById('np-type')?.value  || 'Sneakers';
+  const aankoop = parseFloat(document.getElementById('np-inkoop')?.value) || 0;
+  const verkoop = parseFloat(document.getElementById('np-verkoop')?.value) || 0;
+  if (!item_id || !naam) { showToast('Item-ID en naam zijn verplicht', 'error'); return; }
+  const sizes = [];
+  document.querySelectorAll('#np-sizes-container .np-size-row').forEach(row => {
+    const maat = (row.querySelector('.np-size-maat')?.value || '').trim();
+    const vrd  = parseInt(row.querySelector('.np-size-vrd')?.value) || 0;
+    if (maat) sizes.push({maat, voorraad: vrd});
+  });
+  if (!sizes.length) { showToast('Voeg minstens 1 maat toe', 'error'); return; }
+  const r = await apiFetch('/admin/api/add-product-group', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({item_id, naam, type: type_, aankoop_prijs: aankoop, verkoop_prijs: verkoop, sizes})
+  });
+  if (r.success) {
+    showToast('Product toegevoegd!', 'success');
+    toggleAddProduct();
+    ['np-item','np-naam','np-inkoop','np-verkoop'].forEach(id => {
+      const el = document.getElementById(id); if (el) el.value = '';
+    });
+    document.getElementById('np-sizes-container').innerHTML = '';
+    loaded['voorraad'] = false;
+    loadVoorraad();
+  } else { showToast(r.error || 'Fout bij toevoegen', 'error'); }
+}
+
+// ── 2b. OP AANVRAAG ────────────────────────────────────────────────────────
+let odGroupData = [];
+const OD_CAT_ORDER = ['Sneakers', 'Tracksuits', 'Horloges', 'Accessoires'];
+
+async function loadOpAanvraag() {
+  const d = await apiFetch('/admin/api/on-demand-grouped');
+  odGroupData = d.groups || [];
+  renderOdCards();
+}
+
+function renderOdCards() {
+  const container = document.getElementById('od-cards-container');
+  if (!odGroupData.length) {
+    container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--grey-dk)">Geen op-aanvraag producten.</div>';
+    return;
+  }
+  container.innerHTML = odGroupData.map(g => renderOdCard(g)).join('');
+}
+
+function renderOdCard(g) {
+  const sid        = 'odc-' + safeId(g.item_id);
+  const initials   = (g.naam || '').split(' ').map(w => w[0] || '').join('').substring(0, 2).toUpperCase();
+  const photoHtml  = g.foto
+    ? `<img src="/${g.foto}" style="width:64px;height:64px;object-fit:cover;border-radius:8px;flex-shrink:0">`
+    : `<div style="width:64px;height:64px;background:#f0f0f0;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:20px;color:#aaa;flex-shrink:0">${initials}</div>`;
+  const safeNaam   = (g.naam    || '').replace(/'/g, "\\'");
+  const safeItemId = (g.item_id || '').replace(/'/g, "\\'");
+
+  const sizesHtml = (g.sizes || []).map(s => {
+    const safeSku  = (s.sku_key || '').replace(/'/g, "\\'");
+    const safeMaat = (s.maat   || '').replace(/'/g, "\\'");
+    return `<span class="size-badge" style="background:#e3f2fd;color:#1565c0;cursor:pointer" title="Klik om te verwijderen"
+      onclick="deleteOdSize('${safeSku}','${safeMaat}','${safeItemId}')">${s.maat || '?'} <small>&#10005;</small></span>`;
+  }).join('');
+
+  return `
+<div class="product-group-card" id="${sid}">
+  <div class="pgc-view" id="${sid}-v">
+    <div class="pgc-header">
+      ${photoHtml}
+      <div style="flex:1;min-width:0">
+        <div class="pgc-naam">${g.naam || '–'}</div>
+        <div class="pgc-meta">
+          <span class="pgc-type-badge">${g.type || '–'}</span>
+        </div>
+        <div style="font-size:11px;color:#999;margin-bottom:4px">Item-ID: <code style="font-size:11px">${g.item_id}</code></div>
+        <div style="font-size:12px;color:#555;margin-bottom:4px">Vraagprijs: ${fmt(g.demand_prijs)} &nbsp;|&nbsp; Verkoopprijs: ${fmt(g.verkoop_prijs)}</div>
+        <div style="font-size:12px;color:#888;margin-bottom:6px">Levertijd: ${g.levertijd || '10-12 werkdagen'}</div>
+        <div class="pgc-sizes">${sizesHtml || '<span style="font-size:12px;color:#aaa">Geen maten</span>'}</div>
+      </div>
+    </div>
+    <div class="pgc-actions">
+      <button class="admin-btn admin-btn-sm" style="background:var(--grey-md)"
+        onclick="document.getElementById('od-ph-${sid}').click()">&#128247; Foto</button>
+      <input type="file" id="od-ph-${sid}" style="display:none"
+        accept=".jpg,.jpeg,.png,.webp" onchange="submitOdPhoto(this,'${safeItemId}')">
+      <button class="admin-btn admin-btn-sm admin-btn-gold"
+        onclick="addOdSize('${safeItemId}')">+ Maat</button>
+      <button class="admin-btn admin-btn-sm" style="background:var(--grey-md)"
+        onclick="editOdCard('${safeItemId}')">&#9999;&#65039; Bewerken</button>
+      <button class="admin-btn admin-btn-sm admin-btn-danger"
+        onclick="deleteOdGroup('${safeItemId}','${safeNaam}')">&#128465;&#65039; Verwijderen</button>
+    </div>
+  </div>
+  <div class="pgc-edit" id="${sid}-e" style="display:none"></div>
+</div>`;
+}
+
+function editOdCard(item_id) {
+  const g   = odGroupData.find(x => x.item_id === item_id);
+  if (!g) return;
+  const sid        = 'odc-' + safeId(item_id);
+  const safeItemId = item_id.replace(/'/g, "\\'");
+  const typeOpts   = OD_CAT_ORDER.map(t => `<option${g.type === t ? ' selected' : ''}>${t}</option>`).join('');
+  document.getElementById(`${sid}-v`).style.display = 'none';
+  const editDiv = document.getElementById(`${sid}-e`);
+  editDiv.style.display = 'block';
+  editDiv.innerHTML = `
+    <div class="pgc-edit-form">
+      <div class="pgc-section-label">Product bewerken</div>
+      <div class="pgc-edit-grid">
+        <div class="admin-form-group"><label>Naam *</label>
+          <input type="text" class="form-control" id="eod-naam-${safeId(item_id)}" value="${(g.naam||'').replace(/"/g,'&quot;')}"></div>
+        <div class="admin-form-group"><label>Type</label>
+          <select class="form-control" id="eod-type-${safeId(item_id)}">${typeOpts}</select></div>
+        <div class="admin-form-group"><label>Vraagprijs (€) *</label>
+          <input type="number" class="form-control" id="eod-dem-${safeId(item_id)}" value="${g.demand_prijs||0}" step="0.01"></div>
+        <div class="admin-form-group"><label>Verkoopprijs (€) *</label>
+          <input type="number" class="form-control" id="eod-vkp-${safeId(item_id)}" value="${g.verkoop_prijs||0}" step="0.01"></div>
+        <div class="admin-form-group"><label>Levertijd</label>
+          <input type="text" class="form-control" id="eod-lvt-${safeId(item_id)}" value="${(g.levertijd||'10-12 werkdagen').replace(/"/g,'&quot;')}"></div>
+      </div>
+      <div style="margin-top:16px;display:flex;gap:8px">
+        <button class="admin-btn admin-btn-primary" onclick="saveOdCard('${safeItemId}')">Opslaan</button>
+        <button class="admin-btn" style="background:var(--grey-md)" onclick="cancelOdCard('${safeItemId}')">Annuleren</button>
+      </div>
+    </div>`;
+}
+
+function cancelOdCard(item_id) {
+  const sid = 'odc-' + safeId(item_id);
+  document.getElementById(`${sid}-v`).style.display = '';
+  document.getElementById(`${sid}-e`).style.display = 'none';
+}
+
+async function saveOdCard(item_id) {
+  const sid     = safeId(item_id);
+  const naam    = (document.getElementById(`eod-naam-${sid}`)?.value || '').trim();
+  const type_   = document.getElementById(`eod-type-${sid}`)?.value || '';
+  const demand  = parseFloat(document.getElementById(`eod-dem-${sid}`)?.value) || 0;
+  const verkoop = parseFloat(document.getElementById(`eod-vkp-${sid}`)?.value) || 0;
+  const lvt     = (document.getElementById(`eod-lvt-${sid}`)?.value || '10-12 werkdagen').trim();
+  if (!naam) { showToast('Naam is verplicht', 'error'); return; }
+  const r = await apiFetch('/admin/api/update-od-group', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({item_id, naam, type: type_, demand_prijs: demand, verkoop_prijs: verkoop, levertijd: lvt})
+  });
+  if (r.success) {
+    const g = odGroupData.find(x => x.item_id === item_id);
+    if (g) { g.naam = naam; g.type = type_; g.demand_prijs = demand; g.verkoop_prijs = verkoop; g.levertijd = lvt; }
+    showToast('Opgeslagen!', 'success');
+    renderOdCards();
+  } else { showToast(r.error || 'Fout', 'error'); }
+}
+
+async function submitOdPhoto(input, item_id) {
+  const file = input.files[0];
+  if (!file) return;
+  if (file.size > 2 * 1024 * 1024) { showToast('Bestand te groot (max 2MB)', 'error'); return; }
+  const fd = new FormData();
+  fd.append('item_id', item_id);
+  fd.append('file', file);
+  showToast('Foto uploaden...', 'info');
+  try {
+    const res = await fetch('/admin/api/upload-on-demand-photo', {method: 'POST', body: fd});
+    const r   = await res.json();
+    if (r.success) {
+      const g = odGroupData.find(x => x.item_id === item_id);
+      if (g) g.foto = r.foto;
+      renderOdCards();
+      showToast('Foto opgeslagen!', 'success');
+    } else { showToast(r.error || 'Fout bij uploaden', 'error'); }
+  } catch { showToast('Verbindingsfout', 'error'); }
+}
+
+async function addOdSize(item_id) {
+  const maat = prompt('Voer de maat in (bijv. 42, S, M, L):');
+  if (!maat || !maat.trim()) return;
+  const r = await apiFetch('/admin/api/add-od-size', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({item_id, maat: maat.trim()})
+  });
+  if (r.success) {
+    const g = odGroupData.find(x => x.item_id === item_id);
+    if (g) g.sizes.push({sku_key: r.sku_key, maat: maat.trim()});
+    renderOdCards();
+    showToast('Maat toegevoegd!', 'success');
+  } else { showToast(r.error || 'Fout', 'error'); }
+}
+
+async function deleteOdSize(sku_key, maat, item_id) {
+  if (!confirm(`Maat "${maat}" verwijderen?`)) return;
+  const r = await apiFetch('/admin/api/delete-on-demand', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({sku_key})
+  });
+  if (r.success) {
+    const g = odGroupData.find(x => x.item_id === item_id);
+    if (g) g.sizes = (g.sizes || []).filter(s => s.sku_key !== sku_key);
+    renderOdCards();
+    showToast('Maat verwijderd', 'success');
+  } else { showToast(r.error || 'Fout', 'error'); }
+}
+
+async function deleteOdGroup(item_id, naam) {
+  if (!confirm(`Weet je zeker dat je "${naam}" (alle maten) wil verwijderen?`)) return;
+  const r = await apiFetch('/admin/api/delete-od-group', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({item_id})
+  });
+  if (r.success) {
+    odGroupData = odGroupData.filter(x => x.item_id !== item_id);
+    renderOdCards();
+    showToast('Verwijderd', 'success');
+  } else { showToast(r.error || 'Fout', 'error'); }
+}
+
+function toggleAddOd() {
+  const f = document.getElementById('add-od-form');
+  f.style.display = f.style.display === 'none' ? 'block' : 'none';
+}
+
+function addOdNpSizeRow() {
+  const container = document.getElementById('od-np-sizes-container');
+  const row = document.createElement('div');
+  row.className = 'np-size-row';
+  row.innerHTML = `<input type="text" class="form-control" placeholder="Maat (bijv. 42, S, M)" style="flex:1">
+    <button class="admin-btn admin-btn-sm admin-btn-danger" type="button" onclick="this.closest('.np-size-row').remove()">&#10005;</button>`;
+  container.appendChild(row);
+}
+
+async function saveOdProduct() {
+  const item_id = (document.getElementById('od-item-id')?.value || '').trim();
+  const naam    = (document.getElementById('od-naam')?.value    || '').trim();
+  const type_   = document.getElementById('od-type')?.value    || 'Sneakers';
+  const demand  = document.getElementById('od-demand')?.value;
+  const verkoop = document.getElementById('od-verkoop')?.value;
+  if (!item_id || !naam || !demand || !verkoop) {
+    showToast('Item-ID, naam, vraagprijs en verkoopprijs zijn verplicht', 'error'); return;
+  }
+  const maatRows = document.querySelectorAll('#od-np-sizes-container .np-size-row');
+  const sizes = Array.from(maatRows).map(r => ({maat: (r.querySelector('input')?.value || '').trim()})).filter(s => s.maat);
+  if (!sizes.length) { showToast('Voeg minimaal één maat toe', 'error'); return; }
+  try {
+    const r = await apiFetch('/admin/api/add-on-demand-group', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({item_id, naam, type: type_, sizes,
+                            demand_prijs: demand, verkoop_prijs: verkoop, levertijd: '10-12 werkdagen'})
+    });
+    if (r.success) {
+      showToast('Product toegevoegd!', 'success');
+      toggleAddOd();
+      ['od-item-id','od-naam','od-demand','od-verkoop'].forEach(id => {
+        const el = document.getElementById(id); if (el) el.value = '';
+      });
+      document.getElementById('od-np-sizes-container').innerHTML = '';
+      loaded['op-aanvraag'] = false;
+      loadOpAanvraag();
+    } else { showToast(r.error || 'Onbekende fout', 'error'); }
+  } catch(err) {
+    showToast('Fout: ' + err.message, 'error');
+  }
+}
+
+// ── 3. BESTELLINGEN ────────────────────────────────────────────────────────
+const BESTELLING_STATUSSEN = ['Ontvangen','In behandeling','Verzonden','Bezorgd','Geannuleerd'];
+const BETAAL_STATUSSEN = ['Onbetaald','Betaald','Terugbetaald'];
+
+const BSTATUS_COLORS = {
+  'Ontvangen':      '#dc3545',
+  'In behandeling': '#fd7e14',
+  'Verzonden':      '#0d6efd',
+  'Bezorgd':        '#198754',
+  'Geannuleerd':    '#6c757d',
+};
+const BPAY_COLORS = {
+  'Onbetaald':   '#dc3545',
+  'Betaald':     '#198754',
+  'Terugbetaald':'#6c757d',
+};
+
+function statusSelectStyle(colorMap, value) {
+  const bg = colorMap[value] || '#6c757d';
+  return `background:${bg};color:#fff;border-color:${bg};font-weight:600`;
+}
+
+function statusBadgePill(text, colorMap) {
+  const bg = colorMap[text] || '#6c757d';
+  return `<span style="display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;background:${bg};color:#fff;white-space:nowrap">${text}</span>`;
+}
+
+async function loadBestellingen() {
+  const orders = await apiFetch('/admin/api/orders');
+  const tb = document.getElementById('orders-body');
+  if (!orders.length) {
+    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--grey-dk)">Geen bestellingen</td></tr>';
+    return;
+  }
+  tb.innerHTML = orders.map(o => {
+    const detailId = `detail-${o.bestelnummer}`;
+    const itemsHtml = o.items.map(i =>
+      `<tr><td>${i.sku_key}</td><td>${i.product_naam}</td><td>${i.maat}</td>
+       <td>${i.aantal}x</td><td>${fmt(i.prijs_per_stuk)}</td>
+       <td>${i.is_on_demand ? '<span class="badge badge-gold">Op aanvraag</span>' : ''}</td></tr>`
+    ).join('');
+    return `
+    <tr class="expandable" onclick="toggleDetail('${detailId}')">
+      <td><strong>#${o.bestelnummer}</strong></td>
+      <td>${o.klant_naam || '–'}</td>
+      <td>${o.instagram || '–'}</td>
+      <td>${fmtDate(o.besteldatum)}</td>
+      <td><strong>${fmt(o.totaalbedrag)}</strong></td>
+      <td onclick="event.stopPropagation()">
+        <select class="status-select" id="bsselect-${o.bestelnummer}"
+          style="${statusSelectStyle(BSTATUS_COLORS, o.bestellingstatus)}"
+          onchange="updateStatus(${o.bestelnummer},'bestellingstatus',this.value)">
+          ${BESTELLING_STATUSSEN.map(s =>
+            `<option ${s===o.bestellingstatus?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </td>
+      <td onclick="event.stopPropagation()">
+        <select class="status-select" id="bpselect-${o.bestelnummer}"
+          style="${statusSelectStyle(BPAY_COLORS, o.betaalstatus)}"
+          onchange="updateStatus(${o.bestelnummer},'betaalstatus',this.value)">
+          ${BETAAL_STATUSSEN.map(s =>
+            `<option ${s===o.betaalstatus?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </td>
+      <td onclick="event.stopPropagation()">
+        <div style="display:flex;gap:4px">
+          <a href="/admin/invoice/${o.bestelnummer}" class="admin-btn admin-btn-sm"
+             style="background:var(--grey);text-decoration:none;display:inline-flex;align-items:center;justify-content:center"
+             target="_blank" title="Factuur downloaden">📄</a>
+          <button class="admin-btn admin-btn-sm" style="background:var(--grey)"
+            onclick="resendInvoice(${o.bestelnummer})" title="Factuur opnieuw versturen">🔄</button>
+          <button class="admin-btn admin-btn-sm admin-btn-danger"
+            onclick="deleteOrder(${o.bestelnummer})" title="Bestelling verwijderen">🗑️</button>
+        </div>
+      </td>
+    </tr>
+    <tr class="expand-row" id="${detailId}">
+      <td colspan="8">
+        <div class="expand-content" id="${detailId}-content">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px">
+            <div>
+              <strong>Adres:</strong><br>
+              ${o.adres || '–'}, ${o.postcode || ''} ${o.stad || ''}<br>
+              ${o.land || ''}
+            </div>
+            <div>
+              <strong>Verzending:</strong> ${o.verzendmethode} (${fmt(o.verzendkosten)})<br>
+              <strong>Korting:</strong> ${o.actiecode ? `${o.actiecode} (–${fmt(o.kortingsbedrag)})` : '–'}<br>
+              <strong>Opmerking:</strong> ${o.opmerking || '–'}
+            </div>
+          </div>
+          <table class="admin-table" style="font-size:12px">
+            <thead><tr><th>SKU</th><th>Product</th><th>Maat</th><th>Aantal</th><th>Prijs/st</th><th></th></tr></thead>
+            <tbody>${itemsHtml}</tbody>
+          </table>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function toggleDetail(id) {
+  const content = document.getElementById(`${id}-content`);
+  if (content) content.classList.toggle('open');
+}
+
+async function updateStatus(bestelnummer, field, value) {
+  const r = await apiFetch('/admin/api/update-status', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bestelnummer, field, value})
+  });
+  if (r.success) {
+    showToast('Status bijgewerkt', 'success');
+    const selId    = field === 'bestellingstatus' ? `bsselect-${bestelnummer}` : `bpselect-${bestelnummer}`;
+    const colorMap = field === 'bestellingstatus' ? BSTATUS_COLORS : BPAY_COLORS;
+    const el = document.getElementById(selId);
+    if (el) el.setAttribute('style', statusSelectStyle(colorMap, value));
+  } else showToast(r.error, 'error');
+}
+
+async function resendInvoice(bestelnummer) {
+  const r = await apiFetch('/admin/api/resend-invoice', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bestelnummer})
+  });
+  showToast(r.success ? 'Factuur verstuurd!' : (r.error || 'Fout bij versturen'), r.success ? 'success' : 'error');
+}
+
+async function deleteOrder(bestelnummer) {
+  if (!confirm(`Weet je zeker dat je bestelling #${bestelnummer} wilt verwijderen? Stock wordt hersteld.`)) return;
+  const r = await apiFetch('/admin/api/delete-order', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bestelnummer})
+  });
+  if (r.success) {
+    showToast(`Bestelling #${bestelnummer} verwijderd`, 'success');
+    loaded['bestellingen'] = false;
+    loadBestellingen();
+  } else {
+    showToast(r.error || 'Fout bij verwijderen', 'error');
+  }
+}
+
+// ── 4. KLANTEN ─────────────────────────────────────────────────────────────
+async function loadKlanten() {
+  const customers = await apiFetch('/admin/api/customers');
+  const tb = document.getElementById('customers-body');
+  if (!customers.length) {
+    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--grey-dk)">Geen klanten</td></tr>';
+    return;
+  }
+  tb.innerHTML = customers.map(c => {
+    const detailId = `cust-${c.klant_id.replace(/[^a-z0-9]/gi,'_')}`;
+    const ordersHtml = c.orders.map(o =>
+      `<tr><td>#${o.bestelnummer}</td><td>${fmtDate(o.besteldatum)}</td>
+       <td>${fmt(o.totaalbedrag)}</td><td>${statusBadge(o.bestellingstatus)}</td>
+       <td>${statusBadge(o.betaalstatus)}</td></tr>`
+    ).join('');
+    return `
+    <tr class="expandable" onclick="toggleDetail('${detailId}')">
+      <td><code style="font-size:11px">${c.klant_id}</code></td>
+      <td><strong>${c.naam || '–'}</strong></td>
+      <td>${c.instagram || '–'}</td>
+      <td>${c.telefoon || '–'}</td>
+      <td>${c.email || '–'}</td>
+      <td>${c.aantal_bestellingen}</td>
+      <td><strong>${fmt(c.totaal_uitgegeven)}</strong></td>
+      <td>${fmtDate(c.laatste_bestelling)}</td>
+    </tr>
+    <tr class="expand-row" id="${detailId}">
+      <td colspan="8">
+        <div class="expand-content" id="${detailId}-content">
+          <div style="margin-bottom:10px;font-size:13px">
+            <strong>Email:</strong> ${c.email||'–'} &nbsp;|&nbsp;
+            <strong>Tel:</strong> ${c.telefoon||'–'} &nbsp;|&nbsp;
+            <strong>Adres:</strong> ${c.adres||'–'}, ${c.stad||''}
+          </div>
+          ${ordersHtml ? `<table class="admin-table" style="font-size:12px">
+            <thead><tr><th>#</th><th>Datum</th><th>Totaal</th><th>Status</th><th>Betaling</th></tr></thead>
+            <tbody>${ordersHtml}</tbody>
+          </table>` : '<p style="color:var(--grey-dk)">Geen bestellingen</p>'}
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+// ── 5. KORTINGSCODES ───────────────────────────────────────────────────────
+function onDiscountTypeChange() {
+  const t = document.getElementById('nc-type').value;
+  document.getElementById('nc-waarde-wrap').style.display =
+    t === 'GRATIS_VERZENDING' ? 'none' : 'block';
+}
+
+async function loadDiscounts() {
+  const codes = await apiFetch('/admin/api/discounts');
+  const tb = document.getElementById('discounts-body');
+  if (!codes.length) {
+    tb.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--grey-dk)">Geen codes</td></tr>';
+    return;
+  }
+  tb.innerHTML = codes.map(c => `
+    <tr>
+      <td><strong>${c.code}</strong></td>
+      <td>${c.type}</td>
+      <td>${c.type==='PERCENTAGE' ? c.waarde+'%' : c.type==='VAST_BEDRAG' ? fmt(c.waarde) : '–'}</td>
+      <td>${c.minimum_bestelbedrag ? fmt(c.minimum_bestelbedrag) : '–'}</td>
+      <td>${c.eind_datum ? fmtDate(c.eind_datum) : '–'}</td>
+      <td>${c.huidige_gebruik}${c.max_gebruik ? '/'+c.max_gebruik : ''}</td>
+      <td>${c.eenmalig ? '✓' : '–'}</td>
+      <td>${statusBadge(c.actief ? 'Actief' : 'Inactief').replace('badge-grey','').replace('Actief','<span class="badge badge-green">Actief</span>').replace('Inactief','<span class="badge badge-red">Inactief</span>')}</td>
+      <td>
+        <div style="display:flex;gap:5px">
+          <button class="admin-btn admin-btn-sm" style="background:var(--grey-md)"
+            onclick="toggleDiscount('${c.code}', this)">
+            ${c.actief ? 'Deactiveer' : 'Activeer'}
+          </button>
+          <button class="admin-btn admin-btn-sm admin-btn-danger"
+            onclick="deleteDiscount('${c.code}')">🗑️</button>
+        </div>
+      </td>
+    </tr>`).join('');
+}
+
+async function toggleDiscount(code, btn) {
+  btn.disabled = true;
+  const r = await apiFetch('/admin/api/toggle-discount', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code})
+  });
+  if (r.success) {
+    showToast(`Code ${code} ${r.actief ? 'geactiveerd' : 'gedeactiveerd'}`, 'success');
+    loaded['kortingscodes'] = false;
+    loadDiscounts();
+  } else { showToast(r.error, 'error'); }
+  btn.disabled = false;
+}
+
+async function deleteDiscount(code) {
+  if (!confirm(`Weet je zeker dat je kortingscode "${code}" wilt verwijderen?`)) return;
+  const r = await apiFetch('/admin/api/delete-discount', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code})
+  });
+  if (r.success) {
+    showToast(`Code "${code}" verwijderd`, 'success');
+    loaded['kortingscodes'] = false;
+    loadDiscounts();
+  } else { showToast(r.error || 'Fout bij verwijderen', 'error'); }
+}
+
+async function saveDiscount() {
+  const data = {
+    code:  document.getElementById('nc-code').value.trim().toUpperCase(),
+    type:  document.getElementById('nc-type').value,
+    waarde: document.getElementById('nc-waarde').value || 0,
+    minimum_bestelbedrag: document.getElementById('nc-min').value || 0,
+    eind_datum: document.getElementById('nc-datum').value || null,
+    eenmalig: document.getElementById('nc-eenmalig').checked,
+  };
+  const r = await apiFetch('/admin/api/add-discount', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)
+  });
+  if (r.success) {
+    showToast('Kortingscode aangemaakt!', 'success');
+    ['nc-code','nc-waarde','nc-min','nc-datum'].forEach(id => document.getElementById(id).value = '');
+    document.getElementById('nc-eenmalig').checked = false;
+    loaded['kortingscodes'] = false;
+    loadDiscounts();
+  } else { showToast(r.error, 'error'); }
+}
+
+// ── 6. INSTELLINGEN ────────────────────────────────────────────────────────
+async function loadSettings() {
+  const d = await apiFetch('/admin/api/settings');
+  document.getElementById('s-ing').value    = d.ing_payment_link || '';
+  document.getElementById('s-paypal').value = d.paypal_username || '';
+  document.getElementById('s-dhl').value    = d.dhl_kosten || '4.50';
+  document.getElementById('s-postnl').value = d.postnl_kosten || '5.50';
+  document.getElementById('s-gratis').value = d.gratis_verzending_minimum || '200';
+}
+
+async function saveSettings() {
+  const data = {
+    ing_payment_link:          document.getElementById('s-ing').value.trim(),
+    paypal_username:           document.getElementById('s-paypal').value.trim(),
+    dhl_kosten:                document.getElementById('s-dhl').value,
+    postnl_kosten:             document.getElementById('s-postnl').value,
+    gratis_verzending_minimum: document.getElementById('s-gratis').value,
+  };
+  const r = await apiFetch('/admin/api/settings', {
+    method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(data)
+  });
+  if (r.success) showToast('Instellingen opgeslagen!', 'success');
+  else showToast(r.error, 'error');
+}
+</script>
+
+{% endif %}
+</body>
+</html>
