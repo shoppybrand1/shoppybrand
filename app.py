@@ -4,12 +4,16 @@ from functools import wraps
 
 from flask import Flask, render_template, request, jsonify, session, redirect, send_file
 from dotenv import load_dotenv
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import psycopg2.errors
 import smtplib
 import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
+import cloudinary
+import cloudinary.uploader
 
 load_dotenv()
 
@@ -17,17 +21,41 @@ app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'sb_secret_key_2024_#xP9mQ')
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, 'data', 'shoppybrand.db')
+DATABASE_URL = os.getenv('DATABASE_URL')
 ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'shoppybrand')
 INVOICES_DIR = os.path.join(BASE_DIR, 'data', 'invoices')
+
+cloudinary.config(cloudinary_url=os.getenv('CLOUDINARY_URL', ''))
 
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
 
+class _DbConn:
+    """Thin wrapper around psycopg2 providing sqlite3-compatible interface."""
+
+    def __init__(self):
+        self._conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+
+    def execute(self, query, params=None):
+        cur = self._conn.cursor()
+        cur.execute(query, params or ())
+        return cur
+
+    def cursor(self):
+        return self._conn.cursor()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def close(self):
+        self._conn.close()
+
+
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+    return _DbConn()
 
 
 def get_settings():
@@ -231,7 +259,6 @@ def generate_invoice(order_data):
     elements += [HRFlowable(width='100%', thickness=1.5, color=GOLD), Spacer(1, 4)]
     elements.append(p('<b>Betaal binnen 24 uur!</b>', font='Helvetica-Bold', size=BASE, color=BLACK))
     def plink(display, href):
-        # <a href> inside Paragraph creates a real clickable PDF hyperlink
         return Paragraph(
             f'<a href="{href}" color="#0000CC"><u>{display}</u></a>',
             ParagraphStyle('lnk', fontName='Helvetica', fontSize=BASE,
@@ -357,10 +384,10 @@ def send_owner_notification(order_data):
 
 
 def init_db():
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db()
     c = conn.cursor()
-    c.executescript('''
+
+    c.execute('''
         CREATE TABLE IF NOT EXISTS products (
             sku_key TEXT PRIMARY KEY,
             item_id TEXT,
@@ -373,8 +400,10 @@ def init_db():
             foto TEXT DEFAULT NULL,
             created_at TEXT,
             updated_at TEXT
-        );
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS on_demand_products (
             sku_key TEXT PRIMARY KEY,
             item_id TEXT,
@@ -384,9 +413,12 @@ def init_db():
             demand_prijs REAL,
             verkoop_prijs REAL,
             levertijd TEXT DEFAULT '10-12 werkdagen',
-            created_at TEXT
-        );
+            created_at TEXT,
+            foto TEXT DEFAULT NULL
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS customers (
             klant_id TEXT PRIMARY KEY,
             naam TEXT,
@@ -401,10 +433,12 @@ def init_db():
             aantal_bestellingen INTEGER DEFAULT 0,
             laatste_bestelling TEXT,
             created_at TEXT
-        );
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS orders (
-            bestelnummer INTEGER PRIMARY KEY AUTOINCREMENT,
+            bestelnummer SERIAL PRIMARY KEY,
             klant_id TEXT,
             besteldatum TEXT,
             verzendmethode TEXT,
@@ -418,10 +452,12 @@ def init_db():
             opmerking TEXT,
             created_at TEXT,
             updated_at TEXT
-        );
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS order_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             bestelnummer INTEGER,
             sku_key TEXT,
             product_naam TEXT,
@@ -429,8 +465,10 @@ def init_db():
             aantal INTEGER,
             prijs_per_stuk REAL,
             is_on_demand INTEGER DEFAULT 0
-        );
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS discount_codes (
             code TEXT PRIMARY KEY,
             type TEXT,
@@ -442,22 +480,27 @@ def init_db():
             actief INTEGER DEFAULT 1,
             max_gebruik INTEGER DEFAULT 0,
             huidige_gebruik INTEGER DEFAULT 0
-        );
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS settings (
             key TEXT PRIMARY KEY,
             value TEXT,
             updated_at TEXT
-        );
+        )
+    ''')
 
+    c.execute('''
         CREATE TABLE IF NOT EXISTS discount_usage (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id SERIAL PRIMARY KEY,
             code TEXT NOT NULL,
             klant_id TEXT NOT NULL,
             used_at TEXT,
             UNIQUE(code, klant_id)
-        );
+        )
     ''')
+
     now = datetime.now().isoformat()
     defaults = [
         ('gratis_verzending_minimum', '200', now),
@@ -467,47 +510,14 @@ def init_db():
         ('ing_payment_link', '', now),
         ('low_stock_alert', '1', now),
     ]
-    c.executemany(
-        'INSERT OR IGNORE INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
-        defaults
-    )
+    for key, value, ts in defaults:
+        c.execute(
+            'INSERT INTO settings (key, value, updated_at) VALUES (%s, %s, %s) '
+            'ON CONFLICT (key) DO NOTHING',
+            (key, value, ts)
+        )
+
     conn.commit()
-    # Migration: add levertijd column to existing databases
-    try:
-        c.execute("ALTER TABLE on_demand_products ADD COLUMN levertijd TEXT DEFAULT '10-12 werkdagen'")
-        conn.commit()
-    except Exception:
-        pass
-    # Migration: add foto column to on_demand_products
-    try:
-        c.execute("ALTER TABLE on_demand_products ADD COLUMN foto TEXT DEFAULT NULL")
-        conn.commit()
-    except Exception:
-        pass
-    # Migration: fix eenmalig codes wrongly deactivated by old logic
-    try:
-        conn.execute("UPDATE discount_codes SET actief = 1 WHERE eenmalig = 1 AND actief = 0")
-        conn.commit()
-    except Exception:
-        pass
-    # Migration: renumber klant_id from KL-instagram to KL0001 format
-    try:
-        old_count = conn.execute(
-            "SELECT COUNT(*) FROM customers WHERE klant_id LIKE 'KL-%'"
-        ).fetchone()[0]
-        if old_count > 0:
-            customers_to_migrate = conn.execute(
-                "SELECT klant_id FROM customers ORDER BY created_at"
-            ).fetchall()
-            for i, row in enumerate(customers_to_migrate, 1):
-                old_id = row[0]  # plain tuple — no row_factory in init_db
-                new_id = f'KL{str(i).zfill(4)}'
-                if old_id != new_id:
-                    conn.execute('UPDATE customers SET klant_id = ? WHERE klant_id = ?', (new_id, old_id))
-                    conn.execute('UPDATE orders SET klant_id = ? WHERE klant_id = ?', (new_id, old_id))
-            conn.commit()
-    except Exception:
-        pass
     conn.close()
 
 
@@ -536,8 +546,9 @@ def order():
 def api_products():
     conn = get_db()
     rows = conn.execute(
-        'SELECT sku_key, item_id, naam, type, maat, voorraad, verkoop_prijs, foto '
-        'FROM products ORDER BY naam, CAST(maat AS REAL), maat'
+        "SELECT sku_key, item_id, naam, type, maat, voorraad, verkoop_prijs, foto "
+        "FROM products ORDER BY naam, "
+        "CASE WHEN maat ~ '^[0-9]+([.][0-9]+)?$' THEN maat::float ELSE 0::float END, maat"
     ).fetchall()
     conn.close()
 
@@ -597,7 +608,7 @@ def api_customer():
     if not instagram.startswith('@'):
         instagram = '@' + instagram
     conn = get_db()
-    row = conn.execute('SELECT * FROM customers WHERE instagram = ?', (instagram,)).fetchone()
+    row = conn.execute('SELECT * FROM customers WHERE instagram = %s', (instagram,)).fetchone()
     conn.close()
     return jsonify(dict(row) if row else None)
 
@@ -615,7 +626,7 @@ def api_discount():
         return jsonify({'valid': False, 'bericht': 'Voer een code in'})
 
     conn = get_db()
-    d = conn.execute('SELECT * FROM discount_codes WHERE code = ?', (code,)).fetchone()
+    d = conn.execute('SELECT * FROM discount_codes WHERE code = %s', (code,)).fetchone()
 
     if not d:
         conn.close()
@@ -638,11 +649,11 @@ def api_discount():
     if d['eenmalig'] and instagram:
         ig = instagram if instagram.startswith('@') else '@' + instagram
         klant = conn.execute(
-            'SELECT klant_id FROM customers WHERE instagram = ?', (ig,)
+            'SELECT klant_id FROM customers WHERE instagram = %s', (ig,)
         ).fetchone()
         if klant:
             used = conn.execute(
-                'SELECT 1 FROM discount_usage WHERE code = ? AND klant_id = ?',
+                'SELECT 1 FROM discount_usage WHERE code = %s AND klant_id = %s',
                 (code, klant['klant_id'])
             ).fetchone()
             if used:
@@ -653,10 +664,10 @@ def api_discount():
 
     if d['type'] == 'PERCENTAGE':
         kortingsbedrag = round(subtotal * float(d['waarde']) / 100, 2)
-        bericht = f'{float(d["waarde"]):.0f}% korting – je bespaart € {kortingsbedrag:.2f}!'
+        bericht = f'{float(d["waarde"]):.0f}% korting – je bespaart € {kortingsbedrag:.2f}!'
     elif d['type'] == 'VAST_BEDRAG':
         kortingsbedrag = min(float(d['waarde']), subtotal)
-        bericht = f'€ {kortingsbedrag:.2f} korting toegepast!'
+        bericht = f'€ {kortingsbedrag:.2f} korting toegepast!'
     elif d['type'] == 'GRATIS_VERZENDING':
         kortingsbedrag = 0
         bericht = 'Gratis verzending toegepast!'
@@ -686,7 +697,6 @@ def submit_order():
         return jsonify({'success': False, 'error': 'Geen producten geselecteerd'}), 400
 
     conn = get_db()
-    c = conn.cursor()
     now = datetime.now().isoformat()
 
     try:
@@ -694,25 +704,29 @@ def submit_order():
         if not instagram.startswith('@'):
             instagram = '@' + instagram
 
-        existing = c.execute('SELECT klant_id FROM customers WHERE instagram = ?', (instagram,)).fetchone()
+        existing = conn.execute(
+            'SELECT klant_id FROM customers WHERE instagram = %s', (instagram,)
+        ).fetchone()
         if existing:
             klant_id = existing['klant_id']
         else:
-            max_row = c.execute(
-                "SELECT MAX(CAST(SUBSTR(klant_id, 3) AS INTEGER)) FROM customers WHERE klant_id LIKE 'KL%'"
+            max_row = conn.execute(
+                "SELECT MAX(CAST(SUBSTRING(klant_id, 3) AS INTEGER)) AS max_num "
+                "FROM customers WHERE klant_id LIKE 'KL%'"
             ).fetchone()
-            next_num = (max_row[0] or 0) + 1
+            next_num = (max_row['max_num'] or 0) + 1
             klant_id = f'KL{str(next_num).zfill(4)}'
-            c.execute('''
+            conn.execute('''
                 INSERT INTO customers
                 (klant_id, naam, instagram, email, telefoon, adres, postcode, stad, land,
                  totaal_uitgegeven, aantal_bestellingen, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 0, 0, %s)
             ''', (klant_id, data['naam'], instagram, data.get('email', ''),
                   data.get('telefoon', ''), data['adres'], data['postcode'],
                   data['stad'], data['land'], now))
 
-        settings = {r['key']: r['value'] for r in c.execute('SELECT key, value FROM settings').fetchall()}
+        settings_rows = conn.execute('SELECT key, value FROM settings').fetchall()
+        settings = {r['key']: r['value'] for r in settings_rows}
 
         subtotaal = round(sum(float(i['prijs']) * int(i['aantal']) for i in data['items']), 2)
 
@@ -731,8 +745,8 @@ def submit_order():
         discount = None
 
         if actiecode:
-            discount = c.execute(
-                'SELECT * FROM discount_codes WHERE code = ? AND actief = 1', (actiecode,)
+            discount = conn.execute(
+                'SELECT * FROM discount_codes WHERE code = %s AND actief = 1', (actiecode,)
             ).fetchone()
             if discount:
                 if discount['minimum_bestelbedrag'] and subtotaal < float(discount['minimum_bestelbedrag']):
@@ -754,50 +768,51 @@ def submit_order():
 
         totaalbedrag = round(subtotaal + verzendkosten - kortingsbedrag, 2)
 
-        c.execute('''
+        cur = conn.execute('''
             INSERT INTO orders
             (klant_id, besteldatum, verzendmethode, verzendkosten, actiecode, kortingsbedrag,
              subtotaal, totaalbedrag, bestellingstatus, betaalstatus, opmerking, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'Ontvangen', 'Onbetaald', ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Ontvangen', 'Onbetaald', %s, %s, %s)
+            RETURNING bestelnummer
         ''', (klant_id, now, verzendmethode, verzendkosten, actiecode,
               kortingsbedrag, subtotaal, totaalbedrag, data.get('opmerking') or None, now, now))
-        bestelnummer = c.lastrowid
+        bestelnummer = cur.fetchone()['bestelnummer']
 
         for item in data['items']:
             is_od = int(item.get('is_on_demand', 0))
-            c.execute('''
+            conn.execute('''
                 INSERT INTO order_items
                 (bestelnummer, sku_key, product_naam, maat, aantal, prijs_per_stuk, is_on_demand)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
             ''', (bestelnummer, item['sku_key'], item['naam'], item['maat'],
                   int(item['aantal']), float(item['prijs']), is_od))
             if not is_od:
-                c.execute(
-                    'UPDATE products SET voorraad = MAX(0, voorraad - ?), updated_at = ? WHERE sku_key = ?',
+                conn.execute(
+                    'UPDATE products SET voorraad = GREATEST(0, voorraad - %s), updated_at = %s WHERE sku_key = %s',
                     (int(item['aantal']), now, item['sku_key'])
                 )
 
-        c.execute('''
+        conn.execute('''
             UPDATE customers SET
-                naam = ?, email = ?, telefoon = ?, adres = ?, postcode = ?, stad = ?, land = ?,
-                totaal_uitgegeven = totaal_uitgegeven + ?,
+                naam = %s, email = %s, telefoon = %s, adres = %s, postcode = %s, stad = %s, land = %s,
+                totaal_uitgegeven = totaal_uitgegeven + %s,
                 aantal_bestellingen = aantal_bestellingen + 1,
-                laatste_bestelling = ?
-            WHERE klant_id = ?
+                laatste_bestelling = %s
+            WHERE klant_id = %s
         ''', (data['naam'], data.get('email', ''), data.get('telefoon', ''),
               data['adres'], data['postcode'], data['stad'], data['land'],
               totaalbedrag, now, klant_id))
 
         if discount:
-            c.execute(
-                'UPDATE discount_codes SET huidige_gebruik = huidige_gebruik + 1 WHERE code = ?',
+            conn.execute(
+                'UPDATE discount_codes SET huidige_gebruik = huidige_gebruik + 1 WHERE code = %s',
                 (actiecode,)
             )
             if discount['eenmalig']:
-                # Track per-klant usage; code stays active for other customers
                 try:
-                    c.execute(
-                        'INSERT OR IGNORE INTO discount_usage (code, klant_id, used_at) VALUES (?, ?, ?)',
+                    conn.execute(
+                        'INSERT INTO discount_usage (code, klant_id, used_at) VALUES (%s, %s, %s) '
+                        'ON CONFLICT (code, klant_id) DO NOTHING',
                         (actiecode, klant_id, now)
                     )
                 except Exception:
@@ -858,7 +873,7 @@ def submit_order():
 def success(bestelnummer):
     conn = get_db()
     order_row = conn.execute(
-        'SELECT * FROM orders WHERE bestelnummer = ?', (bestelnummer,)
+        'SELECT * FROM orders WHERE bestelnummer = %s', (bestelnummer,)
     ).fetchone()
     conn.close()
     if not order_row:
@@ -894,24 +909,28 @@ def admin_overview():
 
     stats = {
         'today_revenue': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag),0) FROM orders "
-            "WHERE DATE(besteldatum)=? AND betaalstatus='Betaald'", (today,)
-        ).fetchone()[0],
+            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
+            "WHERE besteldatum::date = %s AND betaalstatus = 'Betaald'", (today,)
+        ).fetchone()['val'],
         'week_revenue': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag),0) FROM orders "
-            "WHERE strftime('%Y-%W',besteldatum)=strftime('%Y-%W','now') AND betaalstatus='Betaald'"
-        ).fetchone()[0],
+            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
+            "WHERE DATE_TRUNC('week', besteldatum::timestamp) = DATE_TRUNC('week', NOW()) "
+            "AND betaalstatus = 'Betaald'"
+        ).fetchone()['val'],
         'month_revenue': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag),0) FROM orders "
-            "WHERE strftime('%Y-%m',besteldatum)=strftime('%Y-%m','now') AND betaalstatus='Betaald'"
-        ).fetchone()[0],
+            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
+            "WHERE DATE_TRUNC('month', besteldatum::timestamp) = DATE_TRUNC('month', NOW()) "
+            "AND betaalstatus = 'Betaald'"
+        ).fetchone()['val'],
         'pending_payment': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag),0) FROM orders WHERE betaalstatus='Onbetaald'"
-        ).fetchone()[0],
+            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders WHERE betaalstatus = 'Onbetaald'"
+        ).fetchone()['val'],
         'low_stock_count': conn.execute(
-            "SELECT COUNT(*) FROM products WHERE voorraad > 0 AND voorraad <= 1"
-        ).fetchone()[0],
-        'total_orders': conn.execute("SELECT COUNT(*) FROM orders").fetchone()[0],
+            "SELECT COUNT(*) AS cnt FROM products WHERE voorraad > 0 AND voorraad <= 1"
+        ).fetchone()['cnt'],
+        'total_orders': conn.execute(
+            "SELECT COUNT(*) AS cnt FROM orders"
+        ).fetchone()['cnt'],
     }
 
     last_orders = conn.execute('''
@@ -942,7 +961,7 @@ def admin_orders_api():
     for o in orders:
         o_dict = dict(o)
         items = conn.execute(
-            'SELECT * FROM order_items WHERE bestelnummer = ?', (o['bestelnummer'],)
+            'SELECT * FROM order_items WHERE bestelnummer = %s', (o['bestelnummer'],)
         ).fetchall()
         o_dict['items'] = [dict(i) for i in items]
         result.append(o_dict)
@@ -956,7 +975,8 @@ def admin_orders_api():
 def admin_products_api():
     conn = get_db()
     products = conn.execute(
-        'SELECT * FROM products ORDER BY naam, CAST(maat AS REAL), maat'
+        "SELECT * FROM products ORDER BY naam, "
+        "CASE WHEN maat ~ '^[0-9]+([.][0-9]+)?$' THEN maat::float ELSE 0::float END, maat"
     ).fetchall()
     on_demand = conn.execute(
         'SELECT * FROM on_demand_products ORDER BY naam'
@@ -980,7 +1000,7 @@ def admin_customers_api():
         c_dict = dict(cust)
         orders = conn.execute(
             'SELECT bestelnummer, besteldatum, totaalbedrag, bestellingstatus, betaalstatus '
-            'FROM orders WHERE klant_id=? ORDER BY bestelnummer DESC',
+            'FROM orders WHERE klant_id=%s ORDER BY bestelnummer DESC',
             (cust['klant_id'],)
         ).fetchall()
         c_dict['orders'] = [dict(o) for o in orders]
@@ -1007,7 +1027,7 @@ def admin_update_status():
         return jsonify({'success': False, 'error': 'Ongeldig veld'}), 400
     conn = get_db()
     conn.execute(
-        f'UPDATE orders SET {field}=?, updated_at=? WHERE bestelnummer=?',
+        f'UPDATE orders SET {field}=%s, updated_at=%s WHERE bestelnummer=%s',
         (data['value'], datetime.now().isoformat(), data['bestelnummer'])
     )
     conn.commit()
@@ -1021,7 +1041,7 @@ def admin_update_stock():
     data = request.get_json()
     conn = get_db()
     conn.execute(
-        'UPDATE products SET voorraad=?, updated_at=? WHERE sku_key=?',
+        'UPDATE products SET voorraad=%s, updated_at=%s WHERE sku_key=%s',
         (int(data['voorraad']), datetime.now().isoformat(), data['sku_key'])
     )
     conn.commit()
@@ -1042,14 +1062,15 @@ def admin_add_product():
         conn.execute('''
             INSERT INTO products
             (sku_key, item_id, naam, type, maat, voorraad, aankoop_prijs, verkoop_prijs, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (data['sku_key'], data['item_id'], data['naam'], data['type'], data['maat'],
               int(data.get('voorraad', 0)), float(data.get('aankoop_prijs', 0)),
               float(data.get('verkoop_prijs', 0)), now, now))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': 'SKU bestaat al'}), 400
 
@@ -1065,7 +1086,7 @@ def admin_add_discount():
         conn.execute('''
             INSERT INTO discount_codes
             (code, type, waarde, minimum_bestelbedrag, eind_datum, eenmalig, actief)
-            VALUES (?, ?, ?, ?, ?, ?, 1)
+            VALUES (%s, %s, %s, %s, %s, %s, 1)
         ''', (data['code'].upper(), data['type'], float(data.get('waarde', 0)),
               float(data.get('minimum_bestelbedrag', 0)),
               data.get('eind_datum') or None,
@@ -1073,7 +1094,8 @@ def admin_add_discount():
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': 'Code bestaat al'}), 400
 
@@ -1084,11 +1106,11 @@ def admin_toggle_discount():
     data = request.get_json()
     conn = get_db()
     conn.execute(
-        'UPDATE discount_codes SET actief=CASE WHEN actief=1 THEN 0 ELSE 1 END WHERE code=?',
+        'UPDATE discount_codes SET actief=CASE WHEN actief=1 THEN 0 ELSE 1 END WHERE code=%s',
         (data['code'],)
     )
     conn.commit()
-    row = conn.execute('SELECT actief FROM discount_codes WHERE code=?', (data['code'],)).fetchone()
+    row = conn.execute('SELECT actief FROM discount_codes WHERE code=%s', (data['code'],)).fetchone()
     conn.close()
     return jsonify({'success': True, 'actief': row['actief'] if row else 0})
 
@@ -1106,7 +1128,8 @@ def admin_settings():
     conn = get_db()
     for key, value in data.items():
         conn.execute(
-            'INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)',
+            'INSERT INTO settings (key, value, updated_at) VALUES (%s, %s, %s) '
+            'ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at',
             (key, str(value), now)
         )
     conn.commit()
@@ -1123,13 +1146,13 @@ def admin_download_invoice(bestelnummer):
         order = conn.execute('''
             SELECT o.*, c.naam, c.instagram, c.email, c.telefoon, c.adres, c.postcode, c.stad, c.land
             FROM orders o LEFT JOIN customers c ON o.klant_id = c.klant_id
-            WHERE o.bestelnummer = ?
+            WHERE o.bestelnummer = %s
         ''', (bestelnummer,)).fetchone()
         if not order:
             conn.close()
             return jsonify({'error': 'Bestelling niet gevonden'}), 404
         items = conn.execute(
-            'SELECT * FROM order_items WHERE bestelnummer = ?', (bestelnummer,)
+            'SELECT * FROM order_items WHERE bestelnummer = %s', (bestelnummer,)
         ).fetchall()
         conn.close()
         order_data = dict(order)
@@ -1152,13 +1175,13 @@ def admin_resend_invoice():
     order = conn.execute('''
         SELECT o.*, c.naam, c.instagram, c.email, c.telefoon, c.adres, c.postcode, c.stad, c.land
         FROM orders o LEFT JOIN customers c ON o.klant_id = c.klant_id
-        WHERE o.bestelnummer = ?
+        WHERE o.bestelnummer = %s
     ''', (bestelnummer,)).fetchone()
     if not order:
         conn.close()
         return jsonify({'success': False, 'error': 'Bestelling niet gevonden'}), 404
     items = conn.execute(
-        'SELECT * FROM order_items WHERE bestelnummer = ?', (bestelnummer,)
+        'SELECT * FROM order_items WHERE bestelnummer = %s', (bestelnummer,)
     ).fetchall()
     conn.close()
     order_data = dict(order)
@@ -1181,7 +1204,7 @@ def admin_update_product():
     now = datetime.now().isoformat()
     conn = get_db()
     conn.execute(
-        'UPDATE products SET naam=?, voorraad=?, aankoop_prijs=?, verkoop_prijs=?, updated_at=? WHERE sku_key=?',
+        'UPDATE products SET naam=%s, voorraad=%s, aankoop_prijs=%s, verkoop_prijs=%s, updated_at=%s WHERE sku_key=%s',
         (data['naam'], int(data['voorraad']), float(data['aankoop_prijs']),
          float(data['verkoop_prijs']), now, sku_key)
     )
@@ -1198,7 +1221,7 @@ def admin_delete_product():
     if not sku_key:
         return jsonify({'success': False, 'error': 'SKU is verplicht'}), 400
     conn = get_db()
-    conn.execute('DELETE FROM products WHERE sku_key=?', (sku_key,))
+    conn.execute('DELETE FROM products WHERE sku_key=%s', (sku_key,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1222,17 +1245,19 @@ def admin_add_on_demand():
         conn.execute('''
             INSERT INTO on_demand_products
             (sku_key, item_id, naam, type, maat, demand_prijs, verkoop_prijs, levertijd, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         ''', (sku_key, slug, naam, data.get('type', ''), maat,
               float(data.get('demand_prijs', 0)), float(data.get('verkoop_prijs', 0)),
               data.get('levertijd') or '10-12 werkdagen', now))
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'sku_key': sku_key})
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': f'SKU "{sku_key}" bestaat al — pas naam of maat aan'}), 400
     except Exception as e:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -1255,25 +1280,26 @@ def admin_update_on_demand():
     if old_sku != new_sku:
         try:
             existing = conn.execute(
-                'SELECT foto FROM on_demand_products WHERE sku_key=?', (old_sku,)
+                'SELECT foto FROM on_demand_products WHERE sku_key=%s', (old_sku,)
             ).fetchone()
             foto = existing['foto'] if existing else None
-            conn.execute('DELETE FROM on_demand_products WHERE sku_key=?', (old_sku,))
+            conn.execute('DELETE FROM on_demand_products WHERE sku_key=%s', (old_sku,))
             conn.execute('''
                 INSERT INTO on_demand_products (sku_key, naam, type, maat, demand_prijs, verkoop_prijs, levertijd, foto)
-                VALUES (?,?,?,?,?,?,?,?)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             ''', (new_sku, naam, type_, maat, demand, verkoop, levertijd, foto))
             conn.commit()
             conn.close()
             return jsonify({'success': True})
-        except sqlite3.IntegrityError:
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
             conn.close()
             return jsonify({'success': False, 'error': f'SKU "{new_sku}" bestaat al'}), 400
     else:
         conn.execute('''
             UPDATE on_demand_products
-            SET naam=?, type=?, maat=?, demand_prijs=?, verkoop_prijs=?, levertijd=?
-            WHERE sku_key=?
+            SET naam=%s, type=%s, maat=%s, demand_prijs=%s, verkoop_prijs=%s, levertijd=%s
+            WHERE sku_key=%s
         ''', (naam, type_, maat, demand, verkoop, levertijd, old_sku))
         conn.commit()
         conn.close()
@@ -1288,7 +1314,7 @@ def admin_delete_on_demand():
     if not sku_key:
         return jsonify({'success': False, 'error': 'SKU is verplicht'}), 400
     conn = get_db()
-    conn.execute('DELETE FROM on_demand_products WHERE sku_key=?', (sku_key,))
+    conn.execute('DELETE FROM on_demand_products WHERE sku_key=%s', (sku_key,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1343,8 +1369,8 @@ def admin_update_od_group():
         return jsonify({'success': False, 'error': 'item_id en naam zijn verplicht'}), 400
     conn = get_db()
     conn.execute(
-        'UPDATE on_demand_products SET naam=?, type=?, demand_prijs=?, verkoop_prijs=?, levertijd=? '
-        'WHERE item_id=?',
+        'UPDATE on_demand_products SET naam=%s, type=%s, demand_prijs=%s, verkoop_prijs=%s, levertijd=%s '
+        'WHERE item_id=%s',
         (naam, type_, demand, verkoop, levertijd, item_id)
     )
     conn.commit()
@@ -1362,7 +1388,7 @@ def admin_add_od_size():
         return jsonify({'success': False, 'error': 'item_id en maat zijn verplicht'}), 400
     conn = get_db()
     existing = conn.execute(
-        'SELECT naam, type, demand_prijs, verkoop_prijs, levertijd FROM on_demand_products WHERE item_id=? LIMIT 1',
+        'SELECT naam, type, demand_prijs, verkoop_prijs, levertijd FROM on_demand_products WHERE item_id=%s LIMIT 1',
         (item_id,)
     ).fetchone()
     if not existing:
@@ -1373,14 +1399,15 @@ def admin_add_od_size():
     try:
         conn.execute(
             'INSERT INTO on_demand_products (sku_key, item_id, naam, type, maat, demand_prijs, verkoop_prijs, levertijd, created_at) '
-            'VALUES (?,?,?,?,?,?,?,?,?)',
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
             (sku_key, item_id, existing['naam'], existing['type'], maat,
              existing['demand_prijs'], existing['verkoop_prijs'], existing['levertijd'], now)
         )
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'sku_key': sku_key})
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': f'Maat "{maat}" bestaat al voor dit product'}), 400
 
@@ -1408,13 +1435,14 @@ def admin_add_on_demand_group():
             sku_key = f'{item_id}-{maat}'
             conn.execute(
                 'INSERT INTO on_demand_products (sku_key, item_id, naam, type, maat, demand_prijs, verkoop_prijs, levertijd, created_at) '
-                'VALUES (?,?,?,?,?,?,?,?,?)',
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)',
                 (sku_key, item_id, naam, type_, maat, demand, verkoop, levertijd, now)
             )
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-    except sqlite3.IntegrityError as e:
+    except psycopg2.errors.UniqueViolation as e:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': str(e)}), 400
 
@@ -1427,7 +1455,7 @@ def admin_delete_od_group():
     if not item_id:
         return jsonify({'success': False, 'error': 'item_id is verplicht'}), 400
     conn = get_db()
-    conn.execute('DELETE FROM on_demand_products WHERE item_id=?', (item_id,))
+    conn.execute('DELETE FROM on_demand_products WHERE item_id=%s', (item_id,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1448,27 +1476,30 @@ def admin_upload_photo():
     if file.tell() > 2 * 1024 * 1024:
         return jsonify({'success': False, 'error': 'Max bestandsgrootte is 2MB'}), 400
     file.seek(0)
-    img_dir = os.path.join(BASE_DIR, 'static', 'product_images')
-    os.makedirs(img_dir, exist_ok=True)
-    if item_id:
-        safe_name = item_id.replace('/', '_').replace('\\', '_')
-        filename  = f'{safe_name}.jpg'
-        file.save(os.path.join(img_dir, filename))
-        foto_path = f'static/product_images/{filename}'
-        conn = get_db()
-        conn.execute('UPDATE products SET foto = ? WHERE item_id = ?', (foto_path, item_id))
-        conn.commit()
-        conn.close()
-    else:
-        safe_sku  = sku_key.replace('/', '_').replace('\\', '_')
-        filename  = f'{safe_sku}.jpg'
-        file.save(os.path.join(img_dir, filename))
-        foto_path = f'static/product_images/{filename}'
-        conn = get_db()
-        conn.execute('UPDATE products SET foto = ? WHERE sku_key = ?', (foto_path, sku_key))
-        conn.commit()
-        conn.close()
-    return jsonify({'success': True, 'foto': foto_path})
+    try:
+        if item_id:
+            safe_name = item_id.replace('/', '_').replace('\\', '_')
+            result = cloudinary.uploader.upload(
+                file, public_id=f'products/{safe_name}', overwrite=True, resource_type='image'
+            )
+            foto_url = result['secure_url']
+            conn = get_db()
+            conn.execute('UPDATE products SET foto = %s WHERE item_id = %s', (foto_url, item_id))
+            conn.commit()
+            conn.close()
+        else:
+            safe_sku = sku_key.replace('/', '_').replace('\\', '_')
+            result = cloudinary.uploader.upload(
+                file, public_id=f'products/{safe_sku}', overwrite=True, resource_type='image'
+            )
+            foto_url = result['secure_url']
+            conn = get_db()
+            conn.execute('UPDATE products SET foto = %s WHERE sku_key = %s', (foto_url, sku_key))
+            conn.commit()
+            conn.close()
+        return jsonify({'success': True, 'foto': foto_url})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/admin/api/upload-on-demand-photo', methods=['POST'])
@@ -1486,27 +1517,30 @@ def admin_upload_on_demand_photo():
     if file.tell() > 2 * 1024 * 1024:
         return jsonify({'success': False, 'error': 'Max bestandsgrootte is 2MB'}), 400
     file.seek(0)
-    img_dir = os.path.join(BASE_DIR, 'static', 'product_images')
-    os.makedirs(img_dir, exist_ok=True)
-    if item_id:
-        safe_name = item_id.replace('/', '_').replace('\\', '_')
-        filename  = f'od_{safe_name}.jpg'
-        file.save(os.path.join(img_dir, filename))
-        foto_path = f'static/product_images/{filename}'
-        conn = get_db()
-        conn.execute('UPDATE on_demand_products SET foto = ? WHERE item_id = ?', (foto_path, item_id))
-        conn.commit()
-        conn.close()
-    else:
-        safe_sku  = sku_key.replace('/', '_').replace('\\', '_')
-        filename  = f'od_{safe_sku}.jpg'
-        file.save(os.path.join(img_dir, filename))
-        foto_path = f'static/product_images/{filename}'
-        conn = get_db()
-        conn.execute('UPDATE on_demand_products SET foto = ? WHERE sku_key = ?', (foto_path, sku_key))
-        conn.commit()
-        conn.close()
-    return jsonify({'success': True, 'foto': foto_path})
+    try:
+        if item_id:
+            safe_name = item_id.replace('/', '_').replace('\\', '_')
+            result = cloudinary.uploader.upload(
+                file, public_id=f'od_products/{safe_name}', overwrite=True, resource_type='image'
+            )
+            foto_url = result['secure_url']
+            conn = get_db()
+            conn.execute('UPDATE on_demand_products SET foto = %s WHERE item_id = %s', (foto_url, item_id))
+            conn.commit()
+            conn.close()
+        else:
+            safe_sku = sku_key.replace('/', '_').replace('\\', '_')
+            result = cloudinary.uploader.upload(
+                file, public_id=f'od_products/{safe_sku}', overwrite=True, resource_type='image'
+            )
+            foto_url = result['secure_url']
+            conn = get_db()
+            conn.execute('UPDATE on_demand_products SET foto = %s WHERE sku_key = %s', (foto_url, sku_key))
+            conn.commit()
+            conn.close()
+        return jsonify({'success': True, 'foto': foto_url})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
 
 
 @app.route('/admin/api/update-sku', methods=['POST'])
@@ -1521,12 +1555,13 @@ def admin_update_sku():
         return jsonify({'success': True})
     conn = get_db()
     try:
-        conn.execute('UPDATE products SET sku_key = ? WHERE sku_key = ?', (new_sku, old_sku))
-        conn.execute('UPDATE order_items SET sku_key = ? WHERE sku_key = ?', (new_sku, old_sku))
+        conn.execute('UPDATE products SET sku_key = %s WHERE sku_key = %s', (new_sku, old_sku))
+        conn.execute('UPDATE order_items SET sku_key = %s WHERE sku_key = %s', (new_sku, old_sku))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': f'SKU "{new_sku}" bestaat al'}), 400
 
@@ -1584,25 +1619,19 @@ def admin_update_item_id():
     conn = get_db()
     try:
         rows = conn.execute(
-            'SELECT sku_key, maat FROM products WHERE item_id=?', (old_id,)
+            'SELECT sku_key, maat FROM products WHERE item_id=%s', (old_id,)
         ).fetchall()
         for r in rows:
             new_sku = f"{new_id}-{r['maat']}" if r['maat'] else new_id
-            conn.execute('UPDATE products SET sku_key=?, item_id=? WHERE sku_key=?',
+            conn.execute('UPDATE products SET sku_key=%s, item_id=%s WHERE sku_key=%s',
                          (new_sku, new_id, r['sku_key']))
-            conn.execute('UPDATE order_items SET sku_key=? WHERE sku_key=?',
+            conn.execute('UPDATE order_items SET sku_key=%s WHERE sku_key=%s',
                          (new_sku, r['sku_key']))
-        # Rename photo file if it exists
-        old_foto = os.path.join(BASE_DIR, 'static', 'product_images', f'{old_id}.jpg')
-        new_foto = os.path.join(BASE_DIR, 'static', 'product_images', f'{new_id}.jpg')
-        if os.path.exists(old_foto) and not os.path.exists(new_foto):
-            os.rename(old_foto, new_foto)
-            new_foto_path = f'static/product_images/{new_id}.jpg'
-            conn.execute('UPDATE products SET foto=? WHERE item_id=?', (new_foto_path, new_id))
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-    except sqlite3.IntegrityError as e:
+    except psycopg2.errors.UniqueViolation as e:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': str(e)}), 400
 
@@ -1620,7 +1649,7 @@ def admin_update_product_group():
         return jsonify({'success': False, 'error': 'item_id en naam zijn verplicht'}), 400
     conn = get_db()
     conn.execute(
-        'UPDATE products SET naam=?, type=?, aankoop_prijs=?, verkoop_prijs=? WHERE item_id=?',
+        'UPDATE products SET naam=%s, type=%s, aankoop_prijs=%s, verkoop_prijs=%s WHERE item_id=%s',
         (naam, type_, aankoop, verkoop, item_id)
     )
     conn.commit()
@@ -1637,7 +1666,7 @@ def admin_update_size_stock():
     if not sku_key or voorraad is None:
         return jsonify({'success': False, 'error': 'sku_key en voorraad zijn verplicht'}), 400
     conn = get_db()
-    conn.execute('UPDATE products SET voorraad=? WHERE sku_key=?', (int(voorraad), sku_key))
+    conn.execute('UPDATE products SET voorraad=%s WHERE sku_key=%s', (int(voorraad), sku_key))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1654,7 +1683,7 @@ def admin_add_size():
         return jsonify({'success': False, 'error': 'item_id en maat zijn verplicht'}), 400
     conn = get_db()
     existing = conn.execute(
-        'SELECT naam, type, aankoop_prijs, verkoop_prijs FROM products WHERE item_id=? LIMIT 1',
+        'SELECT naam, type, aankoop_prijs, verkoop_prijs FROM products WHERE item_id=%s LIMIT 1',
         (item_id,)
     ).fetchone()
     if not existing:
@@ -1664,14 +1693,15 @@ def admin_add_size():
     try:
         conn.execute(
             'INSERT INTO products (sku_key, item_id, naam, type, maat, voorraad, aankoop_prijs, verkoop_prijs) '
-            'VALUES (?,?,?,?,?,?,?,?)',
+            'VALUES (%s, %s, %s, %s, %s, %s, %s, %s)',
             (sku_key, item_id, existing['naam'], existing['type'], maat, voorraad,
              existing['aankoop_prijs'], existing['verkoop_prijs'])
         )
         conn.commit()
         conn.close()
         return jsonify({'success': True, 'sku_key': sku_key})
-    except sqlite3.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': f'Maat "{maat}" bestaat al voor dit product'}), 400
 
@@ -1684,7 +1714,7 @@ def admin_delete_size():
     if not sku_key:
         return jsonify({'success': False, 'error': 'sku_key is verplicht'}), 400
     conn = get_db()
-    conn.execute('DELETE FROM products WHERE sku_key=?', (sku_key,))
+    conn.execute('DELETE FROM products WHERE sku_key=%s', (sku_key,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1712,13 +1742,14 @@ def admin_add_product_group():
             sku_key = f'{item_id}-{maat}'
             conn.execute(
                 'INSERT INTO products (sku_key, item_id, naam, type, maat, voorraad, aankoop_prijs, verkoop_prijs) '
-                'VALUES (?,?,?,?,?,?,?,?)',
+                'VALUES (%s, %s, %s, %s, %s, %s, %s, %s)',
                 (sku_key, item_id, naam, type_, maat, voorraad, aankoop, verkoop)
             )
         conn.commit()
         conn.close()
         return jsonify({'success': True})
-    except sqlite3.IntegrityError as e:
+    except psycopg2.errors.UniqueViolation as e:
+        conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': str(e)}), 400
 
@@ -1753,7 +1784,7 @@ def admin_delete_discount():
     if not code:
         return jsonify({'success': False, 'error': 'Code is verplicht'}), 400
     conn = get_db()
-    conn.execute('DELETE FROM discount_codes WHERE code = ?', (code,))
+    conn.execute('DELETE FROM discount_codes WHERE code = %s', (code,))
     conn.commit()
     conn.close()
     return jsonify({'success': True})
@@ -1770,27 +1801,27 @@ def admin_delete_order():
     now = datetime.now().isoformat()
     try:
         items = conn.execute(
-            'SELECT sku_key, aantal, is_on_demand FROM order_items WHERE bestelnummer = ?',
+            'SELECT sku_key, aantal, is_on_demand FROM order_items WHERE bestelnummer = %s',
             (bestelnummer,)
         ).fetchall()
         for item in items:
             if not item['is_on_demand']:
                 conn.execute(
-                    'UPDATE products SET voorraad = voorraad + ?, updated_at = ? WHERE sku_key = ?',
+                    'UPDATE products SET voorraad = voorraad + %s, updated_at = %s WHERE sku_key = %s',
                     (item['aantal'], now, item['sku_key'])
                 )
         order = conn.execute(
-            'SELECT klant_id, totaalbedrag FROM orders WHERE bestelnummer = ?',
+            'SELECT klant_id, totaalbedrag FROM orders WHERE bestelnummer = %s',
             (bestelnummer,)
         ).fetchone()
-        conn.execute('DELETE FROM order_items WHERE bestelnummer = ?', (bestelnummer,))
-        conn.execute('DELETE FROM orders WHERE bestelnummer = ?', (bestelnummer,))
+        conn.execute('DELETE FROM order_items WHERE bestelnummer = %s', (bestelnummer,))
+        conn.execute('DELETE FROM orders WHERE bestelnummer = %s', (bestelnummer,))
         if order:
             conn.execute('''
                 UPDATE customers SET
-                    totaal_uitgegeven = MAX(0, totaal_uitgegeven - ?),
-                    aantal_bestellingen = MAX(0, aantal_bestellingen - 1)
-                WHERE klant_id = ?
+                    totaal_uitgegeven = GREATEST(0, totaal_uitgegeven - %s),
+                    aantal_bestellingen = GREATEST(0, aantal_bestellingen - 1)
+                WHERE klant_id = %s
             ''', (order['totaalbedrag'], order['klant_id']))
         conn.commit()
         conn.close()

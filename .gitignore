@@ -8,3 +8,4 @@ __pycache__/
 csv/
 *.csv
 import_data.py
+migrate_to_postgres.py

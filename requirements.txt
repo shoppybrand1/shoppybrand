@@ -3,3 +3,5 @@ python-dotenv
 pandas
 reportlab
 gunicorn
+psycopg2-binary
+cloudinary
