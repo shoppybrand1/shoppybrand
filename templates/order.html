@@ -241,7 +241,7 @@ function productCard(p, isOnDemand) {
 
   const initials = (p.naam || '').split(' ').map(w => w[0] || '').join('').substring(0, 2).toUpperCase();
   const photoHtml = p.foto
-    ? `<div class="product-photo"><img src="/${p.foto}" alt="${p.naam}" loading="lazy"></div>`
+    ? `<div class="product-photo"><img src="${p.foto.startsWith('http') ? p.foto : '/' + p.foto}" alt="${p.naam}" loading="lazy"></div>`
     : `<div class="product-photo product-photo-placeholder">${initials}</div>`;
 
   const levertijdHtml = isOnDemand

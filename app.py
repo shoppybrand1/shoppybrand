@@ -4,6 +4,7 @@ from functools import wraps
 
 from flask import Flask, render_template, request, jsonify, session, redirect, send_file
 from dotenv import load_dotenv
+from whitenoise import WhiteNoise
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import psycopg2.errors
@@ -26,6 +27,9 @@ ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'shoppybrand')
 INVOICES_DIR = os.path.join(BASE_DIR, 'data', 'invoices')
 
 cloudinary.config(cloudinary_url=os.getenv('CLOUDINARY_URL', ''))
+
+# Serve static files in production (gunicorn has no built-in static handler)
+app.wsgi_app = WhiteNoise(app.wsgi_app, root=os.path.join(BASE_DIR, 'static'), prefix='static')
 
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
