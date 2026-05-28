@@ -5,6 +5,121 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>ShoppyBrand – Bestelling plaatsen</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <style>
+    .field-error {
+      color: var(--red);
+      font-size: 12px;
+      margin-top: 4px;
+      padding: 6px 10px;
+      background: #fff0f0;
+      border-left: 3px solid var(--red);
+      border-radius: 4px;
+    }
+    /* ── Confirmation Modal ────────────────────────────────────────────── */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.55);
+      z-index: 1000;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .modal-card {
+      background: var(--white);
+      border-radius: 12px;
+      max-width: 560px;
+      width: 100%;
+      max-height: 90vh;
+      overflow-y: auto;
+      box-shadow: 0 8px 40px rgba(0,0,0,.25);
+    }
+    .modal-header {
+      background: var(--black);
+      color: var(--gold);
+      padding: 20px 24px;
+      border-radius: 12px 12px 0 0;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: .03em;
+    }
+    .modal-body { padding: 24px; }
+    .modal-section { margin-bottom: 20px; }
+    .modal-section-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--grey-dk);
+      margin-bottom: 8px;
+      padding-bottom: 4px;
+      border-bottom: 1px solid var(--grey-md);
+    }
+    .modal-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      font-size: 14px;
+    }
+    .modal-row .lbl { color: var(--grey-dk); }
+    .modal-row .val { font-weight: 500; }
+    .modal-items-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .modal-items-table th {
+      text-align: left;
+      padding: 6px 8px;
+      background: var(--grey);
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+      color: var(--grey-dk);
+    }
+    .modal-items-table td { padding: 8px 8px; border-bottom: 1px solid var(--grey-md); }
+    .modal-items-table tr:last-child td { border-bottom: none; }
+    .modal-total-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 0 4px;
+      margin-top: 8px;
+      border-top: 2px solid var(--black);
+      font-size: 17px;
+      font-weight: 700;
+    }
+    .modal-discount-row { color: var(--green); }
+    .modal-footer {
+      display: flex;
+      gap: 12px;
+      padding: 20px 24px;
+      border-top: 1px solid var(--grey-md);
+    }
+    .modal-btn-confirm {
+      flex: 1;
+      background: var(--gold);
+      color: var(--black);
+      border: none;
+      padding: 14px;
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: .02em;
+      transition: background .2s;
+    }
+    .modal-btn-confirm:hover { background: var(--gold-lt); }
+    .modal-btn-confirm.loading { opacity: .7; cursor: not-allowed; }
+    .modal-btn-back {
+      flex: 0 0 auto;
+      background: var(--grey);
+      color: var(--black);
+      border: 1px solid var(--grey-md);
+      padding: 14px 22px;
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-weight: 600;
+      transition: background .2s;
+    }
+    .modal-btn-back:hover { background: var(--grey-md); }
+  </style>
 </head>
 <body>
 
@@ -52,8 +167,9 @@
       <div class="form-grid">
         <div class="form-group full">
           <label>Instagram account <span class="req">*</span></label>
-          <input type="text" id="instagram" class="form-control" placeholder="@jouwusername"
-                 oninput="validateForm()" onblur="lookupCustomer()">
+          <input type="text" id="instagram" class="form-control" placeholder="jouwusername"
+                 oninput="onInstagramInput()" onblur="onInstagramBlur()">
+          <div id="instagram-error" class="field-error" style="display:none"></div>
         </div>
         <div class="form-group">
           <label>Volledige naam <span class="req">*</span></label>
@@ -171,7 +287,7 @@
 
     <!-- Submit -->
     <div class="sidebar-section">
-      <button class="submit-btn" id="submit-btn" disabled onclick="submitOrder()">
+      <button class="submit-btn" id="submit-btn" disabled onclick="showConfirmModal()">
         Bestelling plaatsen →
       </button>
       <p style="font-size:11px;color:var(--grey-dk);text-align:center;margin-top:10px">
@@ -180,6 +296,62 @@
     </div>
 
   </aside>
+</div>
+
+<!-- ── Order Confirmation Modal ──────────────────────────────────────────── -->
+<div id="confirm-modal" class="modal-overlay" style="display:none" onclick="onModalOverlayClick(event)">
+  <div class="modal-card">
+    <div class="modal-header">Bevestig je bestelling</div>
+    <div class="modal-body">
+
+      <div class="modal-section">
+        <div class="modal-section-title">Klantgegevens</div>
+        <div class="modal-row"><span class="lbl">Naam</span><span class="val" id="cm-naam"></span></div>
+        <div class="modal-row"><span class="lbl">Instagram</span><span class="val" id="cm-instagram"></span></div>
+        <div class="modal-row"><span class="lbl">E-mail</span><span class="val" id="cm-email"></span></div>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-title">Afleveradres</div>
+        <div class="modal-row"><span class="lbl">Adres</span><span class="val" id="cm-adres"></span></div>
+        <div class="modal-row"><span class="lbl">Postcode &amp; Stad</span><span class="val" id="cm-postcode-stad"></span></div>
+        <div class="modal-row"><span class="lbl">Land</span><span class="val" id="cm-land"></span></div>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-title">Producten</div>
+        <table class="modal-items-table">
+          <thead>
+            <tr>
+              <th>Product</th>
+              <th>Maat</th>
+              <th style="text-align:right">Prijs</th>
+            </tr>
+          </thead>
+          <tbody id="cm-items"></tbody>
+        </table>
+      </div>
+
+      <div class="modal-section">
+        <div class="modal-section-title">Totaaloverzicht</div>
+        <div class="modal-row"><span class="lbl">Subtotaal</span><span class="val" id="cm-subtotaal"></span></div>
+        <div class="modal-row"><span class="lbl" id="cm-verzend-label">Verzendkosten</span><span class="val" id="cm-verzend"></span></div>
+        <div class="modal-row modal-discount-row" id="cm-korting-row" style="display:none">
+          <span class="lbl" id="cm-korting-label">Korting</span>
+          <span class="val" id="cm-korting"></span>
+        </div>
+        <div class="modal-total-row">
+          <span>TOTAAL</span>
+          <span id="cm-totaal"></span>
+        </div>
+      </div>
+
+    </div>
+    <div class="modal-footer">
+      <button class="modal-btn-back" onclick="closeConfirmModal()">← Wijzigen</button>
+      <button class="modal-btn-confirm" id="cm-confirm-btn" onclick="actuallySubmitOrder()">Bevestigen →</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" class="toast"></div>
@@ -527,31 +699,65 @@ async function applyDiscount() {
   }
 }
 
+// ── INSTAGRAM NORMALIZATION & VALIDATION ────────────────────────────────────
+function normalizeInstagram() {
+  const input = document.getElementById('instagram');
+  let val = input.value.trim();
+  val = val.replace(/^@+/, '');
+  val = val.toLowerCase();
+  input.value = val;
+  return val;
+}
+
+function validateInstagram() {
+  const val = normalizeInstagram();
+  const errEl = document.getElementById('instagram-error');
+  if (!val) {
+    errEl.style.display = 'none';
+    return false;
+  }
+  if (!/^[a-z0-9._]+$/.test(val)) {
+    errEl.textContent = 'Ongeldig Instagram-account. Gebruik alleen letters, cijfers, punten en underscores — geen spaties of speciale tekens.';
+    errEl.style.display = 'block';
+    return false;
+  }
+  errEl.style.display = 'none';
+  return true;
+}
+
+function onInstagramInput() {
+  validateInstagram();
+  validateForm();
+}
+
+async function onInstagramBlur() {
+  if (!validateInstagram()) return;
+  await lookupCustomer();
+}
+
 // ── VALIDATION ─────────────────────────────────────────────────────────────
 function validateForm() {
-  const req = ['instagram', 'naam', 'email', 'adres', 'postcode', 'stad'];
+  const req = ['naam', 'email', 'adres', 'postcode', 'stad'];
   const allFilled = req.every(id => document.getElementById(id).value.trim());
   const landOk    = document.getElementById('land').value !== '';
   const hasItems  = cart.length > 0;
   const hasShip   = getSubtotaal() >= SETTINGS.gratis_min ||
                     !!document.querySelector('input[name="verzendmethode"]:checked');
-  document.getElementById('submit-btn').disabled = !(allFilled && landOk && hasItems && hasShip);
+  const igOk      = validateInstagram();
+  document.getElementById('submit-btn').disabled = !(allFilled && landOk && hasItems && hasShip && igOk);
 }
 
-// ── SUBMIT ─────────────────────────────────────────────────────────────────
-async function submitOrder() {
-  if (document.getElementById('submit-btn').disabled) return;
-
-  const btn = document.getElementById('submit-btn');
-  btn.disabled = true;
-  btn.classList.add('loading');
-  btn.textContent = 'Bestelling verwerken...';
-
+// ── CONFIRMATION MODAL ─────────────────────────────────────────────────────
+function buildConfirmPayload() {
   const subtotaal = getSubtotaal();
-  const method = document.querySelector('input[name="verzendmethode"]:checked');
+  const method    = document.querySelector('input[name="verzendmethode"]:checked');
   const verzendmethode = subtotaal >= SETTINGS.gratis_min ? 'Gratis' : (method ? method.value : 'DHL');
+  const verzendkosten  = subtotaal >= SETTINGS.gratis_min ? 0 :
+                         (method && method.value === 'PostNL' ? SETTINGS.postnl_kosten : SETTINGS.dhl_kosten);
+  const kortingsbedrag = activeDiscount ? activeDiscount.kortingsbedrag : 0;
+  const totaal = Math.max(0, subtotaal + verzendkosten - kortingsbedrag);
 
-  const payload = {
+  return {
     naam:          document.getElementById('naam').value.trim(),
     instagram:     document.getElementById('instagram').value.trim(),
     email:         document.getElementById('email').value.trim(),
@@ -562,7 +768,11 @@ async function submitOrder() {
     land:          document.getElementById('land').value,
     opmerking:     document.getElementById('opmerking').value.trim(),
     verzendmethode,
-    actiecode:     activeDiscount ? activeDiscount.code : '',
+    verzendkosten,
+    subtotaal,
+    kortingsbedrag,
+    totaal,
+    actiecode: activeDiscount ? activeDiscount.code : '',
     items: cart.map(i => ({
       sku_key:      i.sku_key,
       naam:         i.naam,
@@ -571,6 +781,79 @@ async function submitOrder() {
       aantal:       i.aantal,
       is_on_demand: i.is_on_demand,
     })),
+  };
+}
+
+function showConfirmModal() {
+  if (document.getElementById('submit-btn').disabled) return;
+  const p = buildConfirmPayload();
+
+  document.getElementById('cm-naam').textContent       = p.naam;
+  document.getElementById('cm-instagram').textContent  = '@' + p.instagram;
+  document.getElementById('cm-email').textContent      = p.email;
+  document.getElementById('cm-adres').textContent      = p.adres;
+  document.getElementById('cm-postcode-stad').textContent = `${p.postcode}  ${p.stad}`.trim();
+  document.getElementById('cm-land').textContent       = p.land;
+
+  const tbody = document.getElementById('cm-items');
+  tbody.innerHTML = p.items.map(i => `
+    <tr>
+      <td>${i.naam}${i.is_on_demand ? ' <em style="font-size:11px;color:var(--grey-dk)">(op aanvraag)</em>' : ''}</td>
+      <td>${i.maat}</td>
+      <td style="text-align:right">${fmt(i.prijs * i.aantal)}<br>
+        <small style="color:var(--grey-dk)">${i.aantal} × ${fmt(i.prijs)}</small></td>
+    </tr>`).join('');
+
+  document.getElementById('cm-subtotaal').textContent = fmt(p.subtotaal);
+
+  const verzendLabel = document.getElementById('cm-verzend-label');
+  const verzendVal   = document.getElementById('cm-verzend');
+  verzendLabel.textContent = `Verzendkosten (${p.verzendmethode})`;
+  verzendVal.textContent   = p.verzendkosten === 0 ? 'Gratis' : fmt(p.verzendkosten);
+
+  const kortingRow = document.getElementById('cm-korting-row');
+  if (p.kortingsbedrag > 0) {
+    document.getElementById('cm-korting-label').textContent = `Korting (${p.actiecode || 'code'})`;
+    document.getElementById('cm-korting').textContent = `– ${fmt(p.kortingsbedrag)}`;
+    kortingRow.style.display = 'flex';
+  } else {
+    kortingRow.style.display = 'none';
+  }
+
+  document.getElementById('cm-totaal').textContent = fmt(p.totaal);
+
+  const confirmBtn = document.getElementById('cm-confirm-btn');
+  confirmBtn.disabled = false;
+  confirmBtn.classList.remove('loading');
+  confirmBtn.textContent = 'Bevestigen →';
+
+  document.getElementById('confirm-modal').style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+}
+
+function closeConfirmModal() {
+  document.getElementById('confirm-modal').style.display = 'none';
+  document.body.style.overflow = '';
+}
+
+function onModalOverlayClick(e) {
+  if (e.target === document.getElementById('confirm-modal')) closeConfirmModal();
+}
+
+// ── ACTUAL SUBMIT (after confirmation) ────────────────────────────────────
+async function actuallySubmitOrder() {
+  const confirmBtn = document.getElementById('cm-confirm-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.classList.add('loading');
+  confirmBtn.textContent = 'Bestelling verwerken...';
+
+  const p = buildConfirmPayload();
+  const payload = {
+    naam: p.naam, instagram: p.instagram, email: p.email,
+    telefoon: p.telefoon, adres: p.adres, postcode: p.postcode,
+    stad: p.stad, land: p.land, opmerking: p.opmerking,
+    verzendmethode: p.verzendmethode, actiecode: p.actiecode,
+    items: p.items,
   };
 
   try {
@@ -581,16 +864,18 @@ async function submitOrder() {
     if (result.success) {
       window.location.href = `/success/${result.bestelnummer}`;
     } else {
+      closeConfirmModal();
       showToast(result.error || 'Er is een fout opgetreden.', 'error');
-      btn.disabled = false;
-      btn.classList.remove('loading');
-      btn.textContent = 'Bestelling plaatsen →';
+      confirmBtn.disabled = false;
+      confirmBtn.classList.remove('loading');
+      confirmBtn.textContent = 'Bevestigen →';
     }
   } catch {
+    closeConfirmModal();
     showToast('Verbindingsfout. Probeer opnieuw.', 'error');
-    btn.disabled = false;
-    btn.classList.remove('loading');
-    btn.textContent = 'Bestelling plaatsen →';
+    confirmBtn.disabled = false;
+    confirmBtn.classList.remove('loading');
+    confirmBtn.textContent = 'Bevestigen →';
   }
 }
 
