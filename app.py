@@ -25,6 +25,17 @@ logging.basicConfig(
     format='%(asctime)s %(levelname)s %(name)s: %(message)s',
 )
 
+# ── EMAIL CREDENTIALS (read once at startup) ──────────────────────────────────
+# Set GMAIL_USER and GMAIL_PASSWORD as environment variables on your platform.
+# On Render: Dashboard → your service → Environment → Add environment variable.
+GMAIL_USER     = os.environ.get('GMAIL_USER', '').strip()
+GMAIL_PASSWORD = os.environ.get('GMAIL_PASSWORD', '').replace(' ', '').strip()
+
+if not GMAIL_USER:
+    logging.warning('GMAIL_USER environment variable is not set — emails will not send')
+if not GMAIL_PASSWORD:
+    logging.warning('GMAIL_PASSWORD environment variable is not set — emails will not send')
+
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'sb_secret_key_2024_#xP9mQ')
 
@@ -326,11 +337,13 @@ def send_invoice_email(order_data, pdf_source):
 
     pdf_source: bytes, BytesIO, or a file-path string.
     """
-    load_dotenv(override=True)
-    gmail_user = os.getenv('GMAIL_USER', '').strip()
-    gmail_pwd  = os.getenv('GMAIL_APP_PASSWORD', '').replace(' ', '').strip()
+    gmail_user = GMAIL_USER
+    gmail_pwd  = GMAIL_PASSWORD
     if not gmail_user or not gmail_pwd:
-        raise ValueError('E-mail credentials niet ingesteld in .env')
+        raise ValueError(
+            'E-mail credentials ontbreken. '
+            'Stel GMAIL_USER en GMAIL_PASSWORD in als omgevingsvariabelen.'
+        )
 
     customer_email = order_data.get('email', '').strip()
     if not customer_email:
@@ -386,11 +399,13 @@ def send_invoice_email(order_data, pdf_source):
 
 
 def send_owner_notification(order_data):
-    load_dotenv(override=True)
-    gmail_user = os.getenv('GMAIL_USER', '').strip()
-    gmail_pwd  = os.getenv('GMAIL_APP_PASSWORD', '').replace(' ', '').strip()
+    gmail_user = GMAIL_USER
+    gmail_pwd  = GMAIL_PASSWORD
     if not gmail_user or not gmail_pwd:
-        raise ValueError('E-mail credentials niet ingesteld in .env')
+        raise ValueError(
+            'E-mail credentials ontbreken. '
+            'Stel GMAIL_USER en GMAIL_PASSWORD in als omgevingsvariabelen.'
+        )
 
     bestelnummer   = order_data['bestelnummer']
     naam           = order_data.get('naam') or '–'
@@ -1820,26 +1835,51 @@ def admin_add_product_group():
         return jsonify({'success': False, 'error': str(e)}), 400
 
 
-@app.route('/admin/api/test-email')
-@admin_required
-def admin_test_email():
-    gmail_user = os.getenv('GMAIL_USER', '').strip()
-    gmail_pwd  = os.getenv('GMAIL_APP_PASSWORD', '').replace(' ', '').strip().strip()
-    if not gmail_user or not gmail_pwd:
-        return jsonify({'success': False, 'error': 'GMAIL_USER of GMAIL_APP_PASSWORD niet ingesteld in .env'})
+def _do_test_email():
+    """Shared logic for both test-email routes."""
+    diag = {
+        'GMAIL_USER_set':     bool(GMAIL_USER),
+        'GMAIL_PASSWORD_set': bool(GMAIL_PASSWORD),
+        'GMAIL_USER_value':   GMAIL_USER or '(not set)',
+        'expected_vars':      ['GMAIL_USER', 'GMAIL_PASSWORD'],
+    }
+    if not GMAIL_USER or not GMAIL_PASSWORD:
+        missing = [v for v, ok in [('GMAIL_USER', GMAIL_USER), ('GMAIL_PASSWORD', GMAIL_PASSWORD)] if not ok]
+        return jsonify({
+            'success': False,
+            'error':   f'Omgevingsvariabelen ontbreken: {", ".join(missing)}',
+            'diagnostics': diag,
+        })
     try:
-        msg = MIMEText('Test e-mail van ShoppyBrand admin panel.', 'plain', 'utf-8')
-        msg['From']    = f'ShoppyBrand <{gmail_user}>'
-        msg['To']      = gmail_user
+        msg = MIMEText('Test e-mail van ShoppyBrand.', 'plain', 'utf-8')
+        msg['From']    = f'ShoppyBrand <{GMAIL_USER}>'
+        msg['To']      = GMAIL_USER
         msg['Subject'] = 'ShoppyBrand – Test e-mail'
         with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.ehlo()
             server.starttls()
-            server.login(gmail_user, gmail_pwd)
-            server.sendmail(gmail_user, gmail_user, msg.as_bytes())
-        return jsonify({'success': True, 'message': f'Test e-mail verstuurd naar {gmail_user}'})
+            server.login(GMAIL_USER, GMAIL_PASSWORD)
+            server.sendmail(GMAIL_USER, GMAIL_USER, msg.as_bytes())
+        return jsonify({
+            'success': True,
+            'message': f'Test e-mail verstuurd naar {GMAIL_USER}',
+            'diagnostics': diag,
+        })
     except Exception as e:
-        return jsonify({'success': False, 'error': str(e)})
+        logging.exception('Test email failed')
+        return jsonify({'success': False, 'error': str(e), 'diagnostics': diag})
+
+
+@app.route('/admin/test-email')
+def admin_test_email_public():
+    """Diagnostic route — no login required so it works even before auth is set up."""
+    return _do_test_email()
+
+
+@app.route('/admin/api/test-email')
+@admin_required
+def admin_test_email():
+    return _do_test_email()
 
 
 @app.route('/admin/api/delete-discount', methods=['POST'])
