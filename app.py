@@ -1,4 +1,6 @@
 import os
+import io
+import traceback
 from datetime import datetime, date
 from functools import wraps
 
@@ -17,6 +19,11 @@ import cloudinary
 import cloudinary.uploader
 
 load_dotenv()
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s %(levelname)s %(name)s: %(message)s',
+)
 
 app = Flask(__name__)
 app.secret_key = os.getenv('SECRET_KEY', 'sb_secret_key_2024_#xP9mQ')
@@ -71,7 +78,13 @@ def get_settings():
 
 # ── PDF INVOICE ───────────────────────────────────────────────────────────────
 
-def generate_invoice(order_data):
+def generate_invoice(order_data, output=None):
+    """
+    Build the invoice PDF.
+
+    output=None   → write to INVOICES_DIR/<bestelnummer>.pdf and return the path.
+    output=BytesIO → write into that buffer and return the buffer (seek(0) already called).
+    """
     from reportlab.lib.pagesizes import A4
     from reportlab.lib import colors
     from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
@@ -79,9 +92,13 @@ def generate_invoice(order_data):
     from reportlab.lib.enums import TA_RIGHT, TA_CENTER, TA_LEFT
     from reportlab.lib.utils import ImageReader
 
-    os.makedirs(INVOICES_DIR, exist_ok=True)
     bestelnummer = order_data['bestelnummer']
-    pdf_path = os.path.join(INVOICES_DIR, f'factuur_{bestelnummer}.pdf')
+
+    if output is None:
+        os.makedirs(INVOICES_DIR, exist_ok=True)
+        dest = os.path.join(INVOICES_DIR, f'factuur_{bestelnummer}.pdf')
+    else:
+        dest = output
 
     BLACK      = colors.HexColor('#000000')
     DARK_GREY  = colors.HexColor('#444444')
@@ -97,7 +114,7 @@ def generate_invoice(order_data):
     cw        = PAGE_W - 2 * margin
 
     doc = SimpleDocTemplate(
-        pdf_path, pagesize=A4,
+        dest, pagesize=A4,
         leftMargin=margin, rightMargin=margin,
         topMargin=margin, bottomMargin=margin,
     )
@@ -294,12 +311,21 @@ def generate_invoice(order_data):
     ]
 
     doc.build(elements)
-    return pdf_path
+
+    if output is None:
+        return dest          # caller gets the file path
+    output.seek(0)
+    return output            # caller gets the BytesIO (already seeked to start)
 
 
 # ── EMAIL ─────────────────────────────────────────────────────────────────────
 
-def send_invoice_email(order_data, pdf_path):
+def send_invoice_email(order_data, pdf_source):
+    """
+    Send the invoice email to the customer.
+
+    pdf_source: bytes, BytesIO, or a file-path string.
+    """
     load_dotenv(override=True)
     gmail_user = os.getenv('GMAIL_USER', '').strip()
     gmail_pwd  = os.getenv('GMAIL_APP_PASSWORD', '').replace(' ', '').strip()
@@ -333,16 +359,24 @@ def send_invoice_email(order_data, pdf_path):
 </body>
 </html>'''
 
+    # Accept bytes, BytesIO, or a file path
+    if isinstance(pdf_source, (bytes, bytearray)):
+        pdf_bytes = bytes(pdf_source)
+    elif hasattr(pdf_source, 'read'):
+        pdf_bytes = pdf_source.read()
+    else:
+        with open(pdf_source, 'rb') as f:
+            pdf_bytes = f.read()
+
     msg = MIMEMultipart('mixed')
     msg['From']    = f'ShoppyBrand <{gmail_user}>'
     msg['To']      = customer_email
     msg['Subject'] = f'Bevestiging bestelling #{bestelnummer} – ShoppyBrand'
     msg.attach(MIMEText(html_body, 'html', 'utf-8'))
 
-    with open(pdf_path, 'rb') as f:
-        att = MIMEApplication(f.read(), _subtype='pdf')
-        att.add_header('Content-Disposition', 'attachment', filename=f'factuur_{bestelnummer}.pdf')
-        msg.attach(att)
+    att = MIMEApplication(pdf_bytes, _subtype='pdf')
+    att.add_header('Content-Disposition', 'attachment', filename=f'factuur_{bestelnummer}.pdf')
+    msg.attach(att)
 
     with smtplib.SMTP('smtp.gmail.com', 587) as server:
         server.ehlo()
@@ -855,15 +889,43 @@ def submit_order():
                 for item in data['items']
             ],
         }
+        # ── Generate PDF in memory (no filesystem dependency) ────────────
+        pdf_buf = None
         try:
-            pdf_path = generate_invoice(order_data)
-            send_invoice_email(order_data, pdf_path)
-        except Exception as mail_err:
-            logging.error('Invoice/email error for order %s: %s', bestelnummer, mail_err)
+            pdf_buf = generate_invoice(order_data, output=io.BytesIO())
+            logging.info('PDF generated in memory for order %s', bestelnummer)
+        except Exception:
+            logging.exception('PDF generation failed for order %s', bestelnummer)
+
+        # ── Send invoice email to customer ────────────────────────────────
+        if pdf_buf is not None:
+            try:
+                send_invoice_email(order_data, pdf_buf)
+                logging.info('Invoice email sent to %s for order %s',
+                             order_data.get('email'), bestelnummer)
+            except Exception:
+                logging.exception('Invoice email failed for order %s', bestelnummer)
+        else:
+            logging.error('Skipping invoice email for order %s: PDF not generated', bestelnummer)
+
+        # ── Cache PDF to disk for admin panel (best-effort) ───────────────
+        try:
+            os.makedirs(INVOICES_DIR, exist_ok=True)
+            disk_path = os.path.join(INVOICES_DIR, f'factuur_{bestelnummer}.pdf')
+            if pdf_buf is not None:
+                pdf_buf.seek(0)
+                with open(disk_path, 'wb') as fh:
+                    fh.write(pdf_buf.read())
+            else:
+                generate_invoice(order_data)   # fallback: try writing to disk directly
+        except Exception:
+            logging.warning('Could not cache invoice PDF to disk for order %s', bestelnummer)
+
+        # ── Owner notification ────────────────────────────────────────────
         try:
             send_owner_notification(order_data)
-        except Exception as notif_err:
-            logging.error('Owner notification error for order %s: %s', bestelnummer, notif_err)
+        except Exception:
+            logging.exception('Owner notification failed for order %s', bestelnummer)
 
         return jsonify({'success': True, 'bestelnummer': bestelnummer})
 
