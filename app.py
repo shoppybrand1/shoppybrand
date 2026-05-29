@@ -1,7 +1,8 @@
 import os
 import io
+import atexit
 import traceback
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from functools import wraps
 
 from flask import Flask, render_template, request, jsonify, session, redirect, send_file
@@ -17,6 +18,9 @@ from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
 import cloudinary
 import cloudinary.uploader
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv()
 
@@ -48,6 +52,29 @@ cloudinary.config(cloudinary_url=os.getenv('CLOUDINARY_URL', ''))
 
 # Serve static files in production (gunicorn has no built-in static handler)
 app.wsgi_app = WhiteNoise(app.wsgi_app, root=os.path.join(BASE_DIR, 'static'), prefix='static')
+
+
+# ── RATE LIMITING ─────────────────────────────────────────────────────────────
+
+def _instagram_rate_key():
+    """Use the normalised Instagram handle as the rate-limit bucket key."""
+    data = request.get_json(silent=True) or {}
+    ig = (data.get('instagram') or '').strip().lower().lstrip('@')
+    return ig or get_remote_address()
+
+limiter = Limiter(
+    key_func=get_remote_address,   # global default (not applied to any route by default)
+    app=app,
+    storage_uri='memory://',       # in-memory; fine for workers=1
+    default_limits=[],             # no global limit — only explicit per-route limits
+)
+
+@app.errorhandler(429)
+def rate_limit_exceeded(e):
+    return jsonify({
+        'success': False,
+        'error': 'Je hebt te veel bestellingen geplaatst. Probeer het over een uur opnieuw.',
+    }), 429
 
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
@@ -436,6 +463,73 @@ def send_owner_notification(order_data):
         server.sendmail(gmail_user, gmail_user, msg.as_bytes())
 
 
+def send_reminder_email(order_data, pdf_source):
+    """Send a payment-reminder email to the customer with the invoice attached."""
+    gmail_user = GMAIL_USER
+    gmail_pwd  = GMAIL_PASSWORD
+    if not gmail_user or not gmail_pwd:
+        raise ValueError('E-mail credentials ontbreken.')
+
+    customer_email = order_data.get('email', '').strip()
+    if not customer_email:
+        raise ValueError('Geen e-mailadres voor klant')
+
+    bestelnummer   = order_data['bestelnummer']
+    naam           = order_data.get('naam') or 'Klant'
+    totaal         = f"{float(order_data['totaalbedrag']):.2f}".replace('.', ',')
+
+    html_body = f'''<!DOCTYPE html>
+<html>
+<body style="font-family: Arial, sans-serif; color: #1a1a1a; max-width: 500px; margin: 0 auto;">
+  <h2 style="color: #c9a84c;">Herinnering: Je bestelling bij ShoppyBrand</h2>
+  <p>Hallo {naam},</p>
+  <p>Je hebt recentelijk een bestelling geplaatst bij ShoppyBrand,
+     maar we hebben je betaling nog niet ontvangen.</p>
+  <p>In de bijlage vind je de factuur nogmaals met alle betaalgegevens.</p>
+  <table style="width:100%; border-collapse:collapse; margin: 20px 0;">
+    <tr>
+      <td style="padding:8px; color:#666;">Bestelnummer</td>
+      <td style="padding:8px;"><strong>#{bestelnummer}</strong></td>
+    </tr>
+    <tr style="background:#f9f9f9;">
+      <td style="padding:8px; color:#666;">Openstaand bedrag</td>
+      <td style="padding:8px;"><strong>€{totaal}</strong></td>
+    </tr>
+  </table>
+  <p>Betaal graag zo snel mogelijk via de links in de bijlage zodat we je bestelling
+     kunnen verwerken.</p>
+  <p><em>Heb je al betaald? Dan kun je deze herinnering negeren.</em></p>
+  <p>Vragen? Stuur ons een DM op Instagram: <strong>@Shoppybrand_</strong></p>
+  <br>
+  <p>Met vriendelijke groet,<br><strong>ShoppyBrand</strong></p>
+</body>
+</html>'''
+
+    if isinstance(pdf_source, (bytes, bytearray)):
+        pdf_bytes = bytes(pdf_source)
+    elif hasattr(pdf_source, 'read'):
+        pdf_bytes = pdf_source.read()
+    else:
+        with open(pdf_source, 'rb') as f:
+            pdf_bytes = f.read()
+
+    msg = MIMEMultipart('mixed')
+    msg['From']    = f'ShoppyBrand <{gmail_user}>'
+    msg['To']      = customer_email
+    msg['Subject'] = f'Herinnering: Je bestelling #{bestelnummer} bij ShoppyBrand'
+    msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+
+    att = MIMEApplication(pdf_bytes, _subtype='pdf')
+    att.add_header('Content-Disposition', 'attachment', filename=f'factuur_{bestelnummer}.pdf')
+    msg.attach(att)
+
+    with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(gmail_user, gmail_pwd)
+        server.sendmail(gmail_user, customer_email, msg.as_bytes())
+
+
 def init_db():
     conn = get_db()
     c = conn.cursor()
@@ -504,7 +598,8 @@ def init_db():
             betaalstatus TEXT DEFAULT 'Onbetaald',
             opmerking TEXT,
             created_at TEXT,
-            updated_at TEXT
+            updated_at TEXT,
+            reminder_sent BOOLEAN DEFAULT FALSE
         )
     ''')
 
@@ -572,6 +667,22 @@ def init_db():
 
     conn.commit()
     conn.close()
+
+
+def migrate_db():
+    """Add columns that didn't exist in the original schema (idempotent)."""
+    conn = get_db()
+    try:
+        conn.execute(
+            'ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE'
+        )
+        conn.commit()
+        logging.info('migrate_db: schema up to date')
+    except Exception:
+        conn.rollback()
+        logging.exception('migrate_db failed')
+    finally:
+        conn.close()
 
 
 # ── ADMIN AUTH ────────────────────────────────────────────────────────────────
@@ -738,6 +849,7 @@ def api_discount():
 
 
 @app.route('/submit-order', methods=['POST'])
+@limiter.limit('5 per hour', key_func=_instagram_rate_key)
 def submit_order():
     data = request.get_json()
     if not data:
@@ -1936,6 +2048,69 @@ def admin_delete_order():
         conn.rollback()
         conn.close()
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+# ── UNPAID ORDER REMINDERS ────────────────────────────────────────────────────
+
+def check_unpaid_orders():
+    """
+    Scheduled job: send one reminder email per unpaid order that is older than
+    24 hours and hasn't already received a reminder.
+    """
+    logging.info('check_unpaid_orders: starting run')
+    try:
+        cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+        conn = get_db()
+        orders = conn.execute('''
+            SELECT o.*, c.naam, c.email, c.instagram
+            FROM orders o
+            LEFT JOIN customers c ON o.klant_id = c.klant_id
+            WHERE o.betaalstatus = 'Onbetaald'
+              AND o.reminder_sent = FALSE
+              AND o.besteldatum < %s
+        ''', (cutoff,)).fetchall()
+        logging.info('check_unpaid_orders: %d order(s) need a reminder', len(orders))
+
+        for row in orders:
+            order_data = dict(row)
+            bestelnummer = order_data['bestelnummer']
+            items = conn.execute(
+                'SELECT * FROM order_items WHERE bestelnummer = %s', (bestelnummer,)
+            ).fetchall()
+            order_data['items'] = [dict(i) for i in items]
+
+            try:
+                pdf_buf = generate_invoice(order_data, output=io.BytesIO())
+                send_reminder_email(order_data, pdf_buf)
+                conn.execute(
+                    'UPDATE orders SET reminder_sent = TRUE, updated_at = %s WHERE bestelnummer = %s',
+                    (datetime.now().isoformat(), bestelnummer)
+                )
+                conn.commit()
+                logging.info('check_unpaid_orders: reminder sent for order %s', bestelnummer)
+            except Exception:
+                logging.exception('check_unpaid_orders: failed for order %s', bestelnummer)
+
+        conn.close()
+    except Exception:
+        logging.exception('check_unpaid_orders: job crashed')
+
+
+# ── STARTUP (runs when gunicorn imports the module) ───────────────────────────
+
+migrate_db()
+
+_scheduler = BackgroundScheduler(daemon=True)
+_scheduler.add_job(
+    check_unpaid_orders,
+    trigger='interval',
+    hours=24,
+    id='unpaid_reminders',
+)
+# Only start the scheduler in the actual worker process, not in Flask's reloader parent.
+if not app.debug or os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+    _scheduler.start()
+    atexit.register(lambda: _scheduler.shutdown(wait=False))
 
 
 if __name__ == '__main__':
