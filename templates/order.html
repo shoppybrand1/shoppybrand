@@ -6,6 +6,7 @@
   <title>ShoppyBrand – Bestelling plaatsen</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
   <style>
+    /* ── EXISTING: field error + confirmation modal ──────────────────────── */
     .field-error {
       color: var(--red);
       font-size: 12px;
@@ -15,7 +16,6 @@
       border-left: 3px solid var(--red);
       border-radius: 4px;
     }
-    /* ── Confirmation Modal ────────────────────────────────────────────── */
     .modal-overlay {
       position: fixed;
       inset: 0;
@@ -119,6 +119,122 @@
       transition: background .2s;
     }
     .modal-btn-back:hover { background: var(--grey-md); }
+
+    /* ── STEP SYSTEM ─────────────────────────────────────────────────────── */
+    .order-step          { display: none; }
+    .order-step.active   { display: block; }
+
+    /* ── STEP 1 ──────────────────────────────────────────────────────────── */
+    .step1-main {
+      padding: 28px 32px 110px;   /* bottom pad keeps last card above sticky bar */
+    }
+    @media (max-width: 600px) {
+      .step1-main { padding: 16px 16px 140px; }
+    }
+
+    /* ── STICKY BOTTOM BAR ───────────────────────────────────────────────── */
+    .sticky-bar {
+      position: fixed;
+      bottom: 0; left: 0; right: 0;
+      background: var(--black);
+      color: var(--white);
+      padding: 14px 28px;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      z-index: 200;
+      box-shadow: 0 -4px 24px rgba(0,0,0,.28);
+      transform: translateY(100%);
+      transition: transform .28s cubic-bezier(.4,0,.2,1);
+    }
+    .sticky-bar.visible { transform: translateY(0); }
+    .sb-summary { flex: 1; min-width: 0; }
+    .sb-count {
+      font-size: 12px;
+      color: rgba(255,255,255,.55);
+      margin-bottom: 2px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sb-price { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+    .sb-btn {
+      flex-shrink: 0;
+      background: var(--gold);
+      color: var(--black);
+      border: none;
+      padding: 15px 36px;
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: .03em;
+      cursor: pointer;
+      transition: background .15s;
+      white-space: nowrap;
+    }
+    .sb-btn:hover { background: var(--gold-lt); }
+    @media (max-width: 600px) {
+      .sticky-bar { flex-direction: column; padding: 14px 16px 18px; gap: 10px; }
+      .sb-summary  { text-align: center; }
+      .sb-btn      { width: 100%; padding: 15px; }
+    }
+
+    /* ── STEP 2 ──────────────────────────────────────────────────────────── */
+    .step2-layout {
+      display: grid;
+      grid-template-columns: 1fr 360px;
+      gap: 0;
+      min-height: calc(100vh - 72px);
+    }
+    .step2-main {
+      padding: 28px 28px 40px 32px;
+    }
+    .step2-sidebar {
+      background: var(--white);
+      border-left: 1px solid var(--grey-md);
+      display: flex;
+      flex-direction: column;
+      position: sticky;
+      top: 72px;
+      height: calc(100vh - 72px);
+      overflow-y: auto;
+    }
+    @media (max-width: 900px) {
+      .step2-layout         { grid-template-columns: 1fr; }
+      .step2-sidebar        { position: static; height: auto; border-left: none; border-top: 1px solid var(--grey-md); }
+    }
+    @media (max-width: 600px) {
+      .step2-main { padding: 16px 16px 40px; }
+    }
+
+    /* ── BACK BUTTON ─────────────────────────────────────────────────────── */
+    .btn-back-step {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: none;
+      border: none;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--grey-dk);
+      cursor: pointer;
+      padding: 0;
+      margin-bottom: 22px;
+      transition: color .15s;
+    }
+    .btn-back-step:hover { color: var(--black); }
+
+    /* ── STEP 2 INLINE CART CARD ─────────────────────────────────────────── */
+    .step2-cart-card {
+      background: var(--white);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .step2-cart-card .form-section-title {
+      margin-bottom: 14px;
+    }
   </style>
 </head>
 <body>
@@ -128,17 +244,21 @@
   <span class="tagline">Jouw stijl, jouw keuze.</span>
 </header>
 
-<div class="order-layout">
 
-  <!-- ── LEFT: products + form ──────────────────────────────────────── -->
-  <main class="order-main">
+<!-- ════════════════════════════════════════════════════════════════════════
+     STEP 1 — PRODUCT SELECTION
+     ════════════════════════════════════════════════════════════════════════ -->
+<div id="step-1" class="order-step active">
+  <div class="step1-main">
 
-    <!-- Search & Filters -->
+    <!-- Search -->
     <div class="search-wrap">
       <span class="search-icon">🔍</span>
       <input type="text" id="search-input" placeholder="Zoek op merk, kleur of type..."
              oninput="filterProducts()">
     </div>
+
+    <!-- Category filters -->
     <div class="filter-row">
       <button class="filter-btn active" data-filter="all" onclick="setFilter('all', this)">Alle</button>
       <button class="filter-btn" data-filter="Sneakers" onclick="setFilter('Sneakers', this)">Sneakers</button>
@@ -146,159 +266,186 @@
       <button class="filter-btn" data-filter="Horloges" onclick="setFilter('Horloges', this)">Horloges</button>
     </div>
 
-    <!-- Products -->
+    <!-- In-stock products -->
     <div class="section-title">Producten <span>in voorraad</span></div>
     <div class="products-grid" id="products-grid">
       <div class="empty-state" style="padding:40px;color:var(--grey-dk);grid-column:1/-1">Producten laden...</div>
     </div>
 
-    <!-- On-demand -->
+    <!-- On-demand products -->
     <div class="section-title" id="od-title" style="display:none">
       📦 Niet op voorraad? <span>Bestel op aanvraag</span>
     </div>
     <div class="products-grid" id="od-grid" style="display:none"></div>
 
-    <!-- ── Customer Form ──────────────────────────────────────────────── -->
-    <div class="form-section">
-      <div class="form-section-title">👤 Jouw gegevens</div>
+  </div><!-- /step1-main -->
 
-      <div id="autofill-toast" class="autofill-toast"></div>
-
-      <div class="form-grid">
-        <div class="form-group full">
-          <label>Instagram account <span class="req">*</span></label>
-          <input type="text" id="instagram" class="form-control" placeholder="jouwusername"
-                 oninput="onInstagramInput()" onblur="onInstagramBlur()">
-          <div id="instagram-error" class="field-error" style="display:none"></div>
-        </div>
-        <div class="form-group">
-          <label>Volledige naam <span class="req">*</span></label>
-          <input type="text" id="naam" class="form-control" placeholder="Voornaam Achternaam"
-                 oninput="validateForm()">
-        </div>
-        <div class="form-group">
-          <label>E-mailadres <span class="req">*</span></label>
-          <input type="email" id="email" class="form-control" placeholder="naam@email.com"
-                 oninput="validateForm()">
-        </div>
-        <div class="form-group full">
-          <label>Telefoonnummer</label>
-          <input type="tel" id="telefoon" class="form-control" placeholder="+31 6 12345678">
-        </div>
-        <div class="form-group full">
-          <label>Straat + huisnummer <span class="req">*</span></label>
-          <input type="text" id="adres" class="form-control" placeholder="Voorbeeldstraat 12A"
-                 oninput="validateForm()">
-        </div>
-        <div class="form-group">
-          <label>Postcode <span class="req">*</span></label>
-          <input type="text" id="postcode" class="form-control" placeholder="1234 AB"
-                 oninput="validateForm()">
-        </div>
-        <div class="form-group">
-          <label>Stad <span class="req">*</span></label>
-          <input type="text" id="stad" class="form-control" placeholder="Amsterdam"
-                 oninput="validateForm()">
-        </div>
-        <div class="form-group full">
-          <label>Land <span class="req">*</span></label>
-          <select id="land" class="form-control" onchange="validateForm()">
-            <option value="">Selecteer land</option>
-            <option value="Nederland" selected>Nederland</option>
-            <option value="België">België</option>
-            <option value="Duitsland">Duitsland</option>
-          </select>
-        </div>
-        <div class="form-group full">
-          <label>Opmerking</label>
-          <textarea id="opmerking" class="form-control" placeholder="Bijzondere wensen of opmerkingen..."></textarea>
-        </div>
-      </div>
+  <!-- Sticky bottom bar — slides up when cart has items -->
+  <div id="sticky-bar" class="sticky-bar">
+    <div class="sb-summary">
+      <div class="sb-count" id="sb-count">0 artikelen in winkelwagen</div>
+      <div class="sb-price" id="sb-total">€ 0,00</div>
     </div>
+    <button class="sb-btn" onclick="goToStep2()">Bestellen →</button>
+  </div>
+</div><!-- /step-1 -->
 
-    <!-- ── Shipping ───────────────────────────────────────────────────── -->
-    <div class="form-section">
-      <div class="form-section-title">🚚 Verzendmethode</div>
-      <div id="free-shipping-notice" class="free-shipping-notice">
-        ✅ Gratis verzending!
-      </div>
-      <div class="shipping-options" id="shipping-options">
-        <label class="shipping-option selected" id="ship-dhl">
-          <input type="radio" name="verzendmethode" value="DHL" checked onchange="onShippingChange(this.closest('label'))">
-          <span class="shipping-option-label">📦 DHL</span>
-          <span class="shipping-option-price">€ {{ settings.dhl_kosten|default('4.50') }}</span>
-        </label>
-        <label class="shipping-option" id="ship-postnl">
-          <input type="radio" name="verzendmethode" value="PostNL" onchange="onShippingChange(this.closest('label'))">
-          <span class="shipping-option-label">📮 PostNL</span>
-          <span class="shipping-option-price">€ {{ settings.postnl_kosten|default('5.50') }}</span>
-        </label>
-      </div>
-      <div id="shipping-upsell" class="shipping-upsell">
-        Bestel voor €{{ settings.gratis_verzending_minimum|default(200) }} of meer en ontvang gratis verzending!
-      </div>
-    </div>
 
-    <!-- ── Discount code ──────────────────────────────────────────────── -->
-    <div class="form-section">
-      <div class="form-section-title">🎟️ Kortingscode</div>
-      <div class="discount-row">
-        <input type="text" id="discount-input" class="form-control" placeholder="JOUWCODE"
-               style="text-transform:uppercase" onkeydown="if(event.key==='Enter') applyDiscount()">
-        <button class="apply-btn" onclick="applyDiscount()">Toepassen</button>
+<!-- ════════════════════════════════════════════════════════════════════════
+     STEP 2 — ORDER COMPLETION
+     ════════════════════════════════════════════════════════════════════════ -->
+<div id="step-2" class="order-step">
+  <div class="step2-layout">
+
+    <!-- ── MAIN COLUMN ──────────────────────────────────────────────────── -->
+    <main class="step2-main">
+
+      <!-- Back link -->
+      <button class="btn-back-step" onclick="goToStep1()">← Terug naar producten</button>
+
+      <!-- Compact editable cart -->
+      <div class="step2-cart-card">
+        <div class="form-section-title">🛒 Winkelwagen</div>
+        <div id="cart-items">
+          <div class="cart-empty">Nog geen producten toegevoegd.</div>
+        </div>
       </div>
-      <div id="discount-feedback" class="discount-feedback"></div>
-    </div>
 
-  </main><!-- /order-main -->
+      <!-- Customer data form -->
+      <div class="form-section">
+        <div class="form-section-title">👤 Jouw gegevens</div>
 
-  <!-- ── RIGHT: Cart + Summary ─────────────────────────────────────────── -->
-  <aside class="order-sidebar">
+        <div id="autofill-toast" class="autofill-toast"></div>
 
-    <!-- Cart items -->
-    <div class="sidebar-section" style="flex:1">
-      <div class="sidebar-title">🛒 Winkelwagen</div>
-      <div id="cart-items">
-        <div class="cart-empty">Nog geen producten toegevoegd.</div>
+        <div class="form-grid">
+          <div class="form-group full">
+            <label>Instagram account <span class="req">*</span></label>
+            <input type="text" id="instagram" class="form-control" placeholder="jouwusername"
+                   oninput="onInstagramInput()" onblur="onInstagramBlur()">
+            <div id="instagram-error" class="field-error" style="display:none"></div>
+          </div>
+          <div class="form-group">
+            <label>Volledige naam <span class="req">*</span></label>
+            <input type="text" id="naam" class="form-control" placeholder="Voornaam Achternaam"
+                   oninput="validateForm()">
+          </div>
+          <div class="form-group">
+            <label>E-mailadres <span class="req">*</span></label>
+            <input type="email" id="email" class="form-control" placeholder="naam@email.com"
+                   oninput="validateForm()">
+          </div>
+          <div class="form-group full">
+            <label>Telefoonnummer</label>
+            <input type="tel" id="telefoon" class="form-control" placeholder="+31 6 12345678">
+          </div>
+          <div class="form-group full">
+            <label>Straat + huisnummer <span class="req">*</span></label>
+            <input type="text" id="adres" class="form-control" placeholder="Voorbeeldstraat 12A"
+                   oninput="validateForm()">
+          </div>
+          <div class="form-group">
+            <label>Postcode <span class="req">*</span></label>
+            <input type="text" id="postcode" class="form-control" placeholder="1234 AB"
+                   oninput="validateForm()">
+          </div>
+          <div class="form-group">
+            <label>Stad <span class="req">*</span></label>
+            <input type="text" id="stad" class="form-control" placeholder="Amsterdam"
+                   oninput="validateForm()">
+          </div>
+          <div class="form-group full">
+            <label>Land <span class="req">*</span></label>
+            <select id="land" class="form-control" onchange="validateForm()">
+              <option value="">Selecteer land</option>
+              <option value="Nederland" selected>Nederland</option>
+              <option value="België">België</option>
+              <option value="Duitsland">Duitsland</option>
+            </select>
+          </div>
+          <div class="form-group full">
+            <label>Opmerking</label>
+            <textarea id="opmerking" class="form-control" placeholder="Bijzondere wensen of opmerkingen..."></textarea>
+          </div>
+        </div>
       </div>
-    </div>
 
-    <!-- Summary -->
-    <div class="sidebar-section">
-      <div class="sidebar-title">Besteloverzicht</div>
-      <div class="summary-row">
-        <span class="label">Subtotaal</span>
-        <span id="s-subtotaal">€ 0,00</span>
+      <!-- Shipping method -->
+      <div class="form-section">
+        <div class="form-section-title">🚚 Verzendmethode</div>
+        <div id="free-shipping-notice" class="free-shipping-notice">
+          ✅ Gratis verzending!
+        </div>
+        <div class="shipping-options" id="shipping-options">
+          <label class="shipping-option selected" id="ship-dhl">
+            <input type="radio" name="verzendmethode" value="DHL" checked onchange="onShippingChange(this.closest('label'))">
+            <span class="shipping-option-label">📦 DHL</span>
+            <span class="shipping-option-price">€ {{ settings.dhl_kosten|default('4.50') }}</span>
+          </label>
+          <label class="shipping-option" id="ship-postnl">
+            <input type="radio" name="verzendmethode" value="PostNL" onchange="onShippingChange(this.closest('label'))">
+            <span class="shipping-option-label">📮 PostNL</span>
+            <span class="shipping-option-price">€ {{ settings.postnl_kosten|default('5.50') }}</span>
+          </label>
+        </div>
+        <div id="shipping-upsell" class="shipping-upsell">
+          Bestel voor €{{ settings.gratis_verzending_minimum|default(200) }} of meer en ontvang gratis verzending!
+        </div>
       </div>
-      <div class="summary-row">
-        <span class="label">Verzendkosten</span>
-        <span id="s-verzend">€ –</span>
-      </div>
-      <div class="summary-row" id="s-korting-row" style="display:none">
-        <span class="label">Korting</span>
-        <span id="s-korting" class="discount-amount">– € 0,00</span>
-      </div>
-      <div class="summary-row total">
-        <span class="label">TOTAAL</span>
-        <span id="s-totaal">€ 0,00</span>
-      </div>
-      <div class="free-ship-promo">🎉 Gratis verzending bij bestellingen vanaf €{{ settings.gratis_verzending_minimum|default(200) }}!</div>
-    </div>
 
-    <!-- Submit -->
-    <div class="sidebar-section">
-      <button class="submit-btn" id="submit-btn" disabled onclick="showConfirmModal()">
-        Bestelling plaatsen →
-      </button>
-      <p style="font-size:11px;color:var(--grey-dk);text-align:center;margin-top:10px">
-        Door te bestellen ga je akkoord met onze voorwaarden.
-      </p>
-    </div>
+      <!-- Discount code -->
+      <div class="form-section">
+        <div class="form-section-title">🎟️ Kortingscode</div>
+        <div class="discount-row">
+          <input type="text" id="discount-input" class="form-control" placeholder="JOUWCODE"
+                 style="text-transform:uppercase" onkeydown="if(event.key==='Enter') applyDiscount()">
+          <button class="apply-btn" onclick="applyDiscount()">Toepassen</button>
+        </div>
+        <div id="discount-feedback" class="discount-feedback"></div>
+      </div>
 
-  </aside>
-</div>
+    </main><!-- /step2-main -->
 
-<!-- ── Order Confirmation Modal ──────────────────────────────────────────── -->
+
+    <!-- ── SIDEBAR: price summary + submit ──────────────────────────────── -->
+    <aside class="step2-sidebar">
+
+      <div class="sidebar-section" style="flex:1">
+        <div class="sidebar-title">Besteloverzicht</div>
+        <div class="summary-row">
+          <span class="label">Subtotaal</span>
+          <span id="s-subtotaal">€ 0,00</span>
+        </div>
+        <div class="summary-row">
+          <span class="label">Verzendkosten</span>
+          <span id="s-verzend">€ –</span>
+        </div>
+        <div class="summary-row" id="s-korting-row" style="display:none">
+          <span class="label">Korting</span>
+          <span id="s-korting" class="discount-amount">– € 0,00</span>
+        </div>
+        <div class="summary-row total">
+          <span class="label">TOTAAL</span>
+          <span id="s-totaal">€ 0,00</span>
+        </div>
+        <div class="free-ship-promo">🎉 Gratis verzending bij bestellingen vanaf €{{ settings.gratis_verzending_minimum|default(200) }}!</div>
+      </div>
+
+      <div class="sidebar-section">
+        <button class="submit-btn" id="submit-btn" disabled onclick="showConfirmModal()">
+          Bestelling plaatsen →
+        </button>
+        <p style="font-size:11px;color:var(--grey-dk);text-align:center;margin-top:10px">
+          Door te bestellen ga je akkoord met onze voorwaarden.
+        </p>
+      </div>
+
+    </aside><!-- /step2-sidebar -->
+
+  </div><!-- /step2-layout -->
+</div><!-- /step-2 -->
+
+
+<!-- ── Order Confirmation Modal ─────────────────────────────────────────── -->
 <div id="confirm-modal" class="modal-overlay" style="display:none" onclick="onModalOverlayClick(event)">
   <div class="modal-card">
     <div class="modal-header">Bevestig je bestelling</div>
@@ -380,6 +527,36 @@ document.addEventListener('DOMContentLoaded', () => {
   loadOnDemand();
   updateSummary();
 });
+
+// ── STEP NAVIGATION ────────────────────────────────────────────────────────
+function goToStep2() {
+  if (!cart.length) return;
+  document.getElementById('step-1').classList.remove('active');
+  document.getElementById('step-2').classList.add('active');
+  window.scrollTo(0, 0);
+  renderCart();     // paint step-2 cart & refresh sidebar summary
+  updateSummary();
+}
+
+function goToStep1() {
+  document.getElementById('step-2').classList.remove('active');
+  document.getElementById('step-1').classList.add('active');
+}
+
+// ── STICKY BAR ─────────────────────────────────────────────────────────────
+function updateStickyBar() {
+  const count     = cart.reduce((n, i) => n + i.aantal, 0);
+  const subtotaal = getSubtotaal();
+  const bar       = document.getElementById('sticky-bar');
+  if (count > 0) {
+    document.getElementById('sb-count').textContent =
+      count === 1 ? '1 artikel in winkelwagen' : `${count} artikelen in winkelwagen`;
+    document.getElementById('sb-total').textContent = fmt(subtotaal);
+    bar.classList.add('visible');
+  } else {
+    bar.classList.remove('visible');
+  }
+}
 
 // ── PRODUCTS ───────────────────────────────────────────────────────────────
 async function loadProducts() {
@@ -498,7 +675,6 @@ function addToCart(itemId) {
     cart.push({ sku_key, naam, maat, prijs, aantal: 1, is_on_demand: 0 });
   }
 
-  // Reset card state
   card.querySelectorAll('.size-btn').forEach(b => b.classList.remove('selected'));
   document.getElementById(`add-${itemId}`).disabled = true;
 
@@ -552,7 +728,7 @@ function filterProducts() {
   const query = document.getElementById('search-input').value.toLowerCase().trim();
 
   const filtered = allProducts.filter(p => {
-    const matchType = activeFilter === 'all' || p.type === activeFilter;
+    const matchType  = activeFilter === 'all' || p.type === activeFilter;
     const matchQuery = !query || p.naam.toLowerCase().includes(query) || (p.type || '').toLowerCase().includes(query);
     return matchType && matchQuery;
   });
@@ -583,6 +759,7 @@ function renderCart() {
   }
   updateSummary();
   validateForm();
+  updateStickyBar();
 }
 
 function updateQty(sku_key, delta) {
@@ -595,6 +772,10 @@ function updateQty(sku_key, delta) {
 function removeFromCart(sku_key) {
   cart = cart.filter(i => i.sku_key !== sku_key);
   renderCart();
+  // If cart is now empty while on step 2, go back to step 1
+  if (!cart.length && document.getElementById('step-2').classList.contains('active')) {
+    goToStep1();
+  }
 }
 
 // ── SUMMARY & TOTALS ───────────────────────────────────────────────────────
@@ -611,10 +792,10 @@ function getVerzendkosten() {
 }
 
 function updateSummary() {
-  const subtotaal   = getSubtotaal();
-  const verzend     = getVerzendkosten();
-  const korting     = activeDiscount ? activeDiscount.kortingsbedrag : 0;
-  const totaal      = Math.max(0, subtotaal + verzend - korting);
+  const subtotaal = getSubtotaal();
+  const verzend   = getVerzendkosten();
+  const korting   = activeDiscount ? activeDiscount.kortingsbedrag : 0;
+  const totaal    = Math.max(0, subtotaal + verzend - korting);
 
   document.getElementById('s-subtotaal').textContent = fmt(subtotaal);
 
@@ -710,7 +891,7 @@ function normalizeInstagram() {
 }
 
 function validateInstagram() {
-  const val = normalizeInstagram();
+  const val   = normalizeInstagram();
   const errEl = document.getElementById('instagram-error');
   if (!val) {
     errEl.style.display = 'none';
@@ -737,13 +918,13 @@ async function onInstagramBlur() {
 
 // ── VALIDATION ─────────────────────────────────────────────────────────────
 function validateForm() {
-  const req = ['naam', 'email', 'adres', 'postcode', 'stad'];
+  const req      = ['naam', 'email', 'adres', 'postcode', 'stad'];
   const allFilled = req.every(id => document.getElementById(id).value.trim());
-  const landOk    = document.getElementById('land').value !== '';
-  const hasItems  = cart.length > 0;
-  const hasShip   = getSubtotaal() >= SETTINGS.gratis_min ||
-                    !!document.querySelector('input[name="verzendmethode"]:checked');
-  const igOk      = validateInstagram();
+  const landOk   = document.getElementById('land').value !== '';
+  const hasItems = cart.length > 0;
+  const hasShip  = getSubtotaal() >= SETTINGS.gratis_min ||
+                   !!document.querySelector('input[name="verzendmethode"]:checked');
+  const igOk     = validateInstagram();
   document.getElementById('submit-btn').disabled = !(allFilled && landOk && hasItems && hasShip && igOk);
 }
 
