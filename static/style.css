@@ -136,6 +136,7 @@ input, select, textarea { font-family: inherit; }
   grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
   gap: 16px;
   margin-bottom: 40px;
+  align-items: stretch;
 }
 
 .product-card {
@@ -160,6 +161,8 @@ input, select, textarea { font-family: inherit; }
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
+  flex: 1;
+  align-content: flex-start;
 }
 .size-btn {
   padding: 5px 10px;
@@ -870,32 +873,37 @@ textarea.form-control { resize: vertical; min-height: 80px; }
 /* ── PRODUCT PHOTOS (order form) ─────────────────────────────────────────── */
 .product-photo {
   width: 100%;
-  height: 200px;
+  position: relative;
+  padding-top: 75%;      /* 4:3 ratio — height = 75% of width */
+  height: 0;
   border-radius: 8px;
   overflow: hidden;
   flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
   background: #f0f0f0;
 }
 .product-photo img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  object-position: center;
   display: block;
 }
 .product-photo-placeholder {
-  width: 100%;
-  height: 200px;
-  background: #f0f0f0;
+  /* Reset ratio trick — use aspect-ratio so flex centering still works */
+  padding-top: 0;
+  height: auto;
+  aspect-ratio: 4 / 3;
   display: flex;
   align-items: center;
   justify-content: center;
   font-size: 24px;
   color: #999;
   letter-spacing: .05em;
-  border-radius: 8px;
 }
 
 /* Stock photo placeholder (admin table) */
