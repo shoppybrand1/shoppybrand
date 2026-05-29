@@ -391,10 +391,11 @@
       <button class="filter-btn" data-filter="Sneakers" onclick="setFilter('Sneakers', this)">Sneakers</button>
       <button class="filter-btn" data-filter="Tracksuits" onclick="setFilter('Tracksuits', this)">Tracksuits</button>
       <button class="filter-btn" data-filter="Horloges" onclick="setFilter('Horloges', this)">Horloges</button>
+      <button class="filter-btn" data-filter="op-aanvraag" onclick="setFilter('op-aanvraag', this)">Op Aanvraag</button>
     </div>
 
     <!-- In-stock products -->
-    <div class="section-title">Producten <span>in voorraad</span></div>
+    <div class="section-title" id="instock-title">Producten <span>in voorraad</span></div>
     <div class="products-grid" id="products-grid">
       <div class="empty-state" style="padding:40px;color:var(--grey-dk);grid-column:1/-1">Producten laden...</div>
     </div>
@@ -947,15 +948,28 @@ function setFilter(filter, btn) {
 }
 
 function filterProducts() {
-  const query = document.getElementById('search-input').value.toLowerCase().trim();
+  const query      = document.getElementById('search-input').value.toLowerCase().trim();
+  const isOd       = activeFilter === 'op-aanvraag';
+  const showInstock = !isOd;                  // hide in-stock section when Op Aanvraag
+  const showOd      = isOd || activeFilter === 'all'; // show OD section for Op Aanvraag or Alle
 
-  const filtered = allProducts.filter(p => {
-    const matchType  = activeFilter === 'all' || p.type === activeFilter;
-    const matchQuery = !query || p.naam.toLowerCase().includes(query) || (p.type || '').toLowerCase().includes(query);
-    return matchType && matchQuery;
-  });
+  // Toggle in-stock section visibility
+  document.getElementById('instock-title').style.display  = showInstock ? '' : 'none';
+  document.getElementById('products-grid').style.display  = showInstock ? '' : 'none';
 
-  renderProducts(filtered);
+  // Toggle on-demand section visibility
+  document.getElementById('od-title').style.display = showOd ? '' : 'none';
+  document.getElementById('od-grid').style.display  = showOd ? (document.getElementById('od-grid').innerHTML ? 'grid' : 'none') : 'none';
+
+  if (!isOd) {
+    // Filter the in-stock grid as before
+    const filtered = allProducts.filter(p => {
+      const matchType  = activeFilter === 'all' || p.type === activeFilter;
+      const matchQuery = !query || p.naam.toLowerCase().includes(query) || (p.type || '').toLowerCase().includes(query);
+      return matchType && matchQuery;
+    });
+    renderProducts(filtered);
+  }
 }
 
 // ── CART ───────────────────────────────────────────────────────────────────
