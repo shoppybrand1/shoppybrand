@@ -132,40 +132,166 @@
       .step1-main { padding: 16px 16px 140px; }
     }
 
-    /* ── STICKY BOTTOM BAR ───────────────────────────────────────────────── */
+    /* ── STICKY BAR WRAPPER ─────────────────────────────────────────────── */
+    /* The wrapper is fixed at bottom and stacks:
+       1. .cart-panel  (expands upward above the handle)
+       2. .sb-handle   (always-visible bar)                               */
     .sticky-bar {
       position: fixed;
       bottom: 0; left: 0; right: 0;
-      background: var(--black);
-      color: var(--white);
-      padding: 14px 28px;
       display: flex;
-      align-items: center;
-      gap: 20px;
+      flex-direction: column;
       z-index: 200;
-      box-shadow: 0 -4px 24px rgba(0,0,0,.28);
       transform: translateY(100%);
       transition: transform .28s cubic-bezier(.4,0,.2,1);
     }
     .sticky-bar.visible { transform: translateY(0); }
-    .sb-summary { flex: 1; min-width: 0; }
+
+    /* ── EXPANDABLE CART PANEL ───────────────────────────────────────────── */
+    .cart-panel {
+      background: var(--white);
+      border-radius: 16px 16px 0 0;
+      max-height: 0;
+      overflow: hidden;
+      transition: max-height .38s cubic-bezier(.4,0,.2,1);
+      box-shadow: 0 -8px 40px rgba(0,0,0,.18);
+    }
+    .cart-panel.open { max-height: 68vh; }
+
+    .cp-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 20px 13px;
+      border-bottom: 1px solid var(--grey-md);
+    }
+    .cp-title { font-size: 15px; font-weight: 700; color: var(--black); }
+    .cp-close {
+      background: var(--grey);
+      border: none;
+      color: var(--grey-dk);
+      font-size: 17px;
+      line-height: 1;
+      width: 30px; height: 30px;
+      border-radius: 50%;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: background .15s, color .15s;
+    }
+    .cp-close:hover { background: var(--grey-md); color: var(--black); }
+
+    /* Scrollable items list — height = panel - header (~55px) - footer (~130px) */
+    .cp-body {
+      overflow-y: auto;
+      max-height: calc(68vh - 190px);
+      padding: 4px 20px;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .cp-footer {
+      padding: 14px 20px 18px;
+      border-top: 1px solid var(--grey-md);
+      background: var(--white);
+    }
+    .cp-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      color: var(--grey-dk);
+      padding: 3px 0;
+    }
+    .cp-total-row {
+      display: flex;
+      justify-content: space-between;
+      font-size: 18px;
+      font-weight: 800;
+      color: var(--black);
+      padding: 10px 0 14px;
+      border-top: 2px solid var(--black);
+      margin-top: 8px;
+    }
+    .cp-order-btn {
+      width: 100%;
+      padding: 15px;
+      background: var(--gold);
+      color: var(--black);
+      border: none;
+      border-radius: var(--radius);
+      font-size: 15px;
+      font-weight: 800;
+      letter-spacing: .03em;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .cp-order-btn:hover { background: var(--gold-lt); }
+
+    /* ── CART BACKDROP ───────────────────────────────────────────────────── */
+    .cart-backdrop {
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.38);
+      z-index: 199;
+    }
+    .cart-backdrop.visible { display: block; }
+
+    /* ── BAR HANDLE (always visible row) ─────────────────────────────────── */
+    .sb-handle {
+      background: var(--black);
+      color: var(--white);
+      padding: 13px 20px 13px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 -4px 24px rgba(0,0,0,.28);
+    }
+    /* Left tap-zone: count + price + chevron — opens/closes panel */
+    .sb-tap-zone {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+    }
+    .sb-summary { min-width: 0; flex: 1; }
     .sb-count {
       font-size: 12px;
       color: rgba(255,255,255,.55);
-      margin-bottom: 2px;
+      margin-bottom: 1px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .sb-price { font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+    .sb-price { font-size: 19px; font-weight: 800; letter-spacing: -.01em; }
+    /* Chevron toggle button */
+    .sb-toggle {
+      flex-shrink: 0;
+      background: rgba(255,255,255,.1);
+      border: 1px solid rgba(255,255,255,.15);
+      color: rgba(255,255,255,.8);
+      border-radius: 6px;
+      padding: 5px 9px;
+      cursor: pointer;
+      line-height: 1;
+      transition: background .15s;
+    }
+    .sb-toggle:hover { background: rgba(255,255,255,.2); }
+    .sb-toggle-icon {
+      display: inline-block;
+      font-size: 13px;
+      transition: transform .32s cubic-bezier(.4,0,.2,1);
+    }
+    .sb-toggle.open .sb-toggle-icon { transform: rotate(180deg); }
+    /* Right: direct checkout button */
     .sb-btn {
       flex-shrink: 0;
       background: var(--gold);
       color: var(--black);
       border: none;
-      padding: 15px 36px;
+      padding: 12px 22px;
       border-radius: var(--radius);
-      font-size: 15px;
+      font-size: 14px;
       font-weight: 800;
       letter-spacing: .03em;
       cursor: pointer;
@@ -174,9 +300,10 @@
     }
     .sb-btn:hover { background: var(--gold-lt); }
     @media (max-width: 600px) {
-      .sticky-bar { flex-direction: column; padding: 14px 16px 18px; gap: 10px; }
-      .sb-summary  { text-align: center; }
-      .sb-btn      { width: 100%; padding: 15px; }
+      .sb-handle   { flex-direction: column; padding: 12px 16px 16px; gap: 10px; }
+      .sb-tap-zone { width: 100%; }
+      .sb-btn      { width: 100%; padding: 14px; font-size: 15px; text-align: center; }
+      .cp-body     { max-height: calc(68vh - 200px); }
     }
 
     /* ── STEP 2 ──────────────────────────────────────────────────────────── */
@@ -280,14 +407,53 @@
 
   </div><!-- /step1-main -->
 
-  <!-- Sticky bottom bar — slides up when cart has items -->
+  <!-- Cart drawer: expandable panel + always-visible handle ─────────────── -->
   <div id="sticky-bar" class="sticky-bar">
-    <div class="sb-summary">
-      <div class="sb-count" id="sb-count">0 artikelen in winkelwagen</div>
-      <div class="sb-price" id="sb-total">€ 0,00</div>
+
+    <!-- ① Cart panel — expands upward above the handle -->
+    <div id="cart-panel" class="cart-panel">
+      <div class="cp-header">
+        <span class="cp-title">🛒 Winkelwagen</span>
+        <button class="cp-close" onclick="closeCartPanel()" aria-label="Sluit">✕</button>
+      </div>
+      <div class="cp-body" id="cp-items"></div>
+      <div class="cp-footer">
+        <div class="cp-row">
+          <span>Subtotaal</span><span id="cp-subtotaal">€ 0,00</span>
+        </div>
+        <div class="cp-row">
+          <span>Verzendkosten</span><span id="cp-verzend">€ –</span>
+        </div>
+        <div class="cp-total-row">
+          <span>TOTAAL</span><span id="cp-totaal">€ 0,00</span>
+        </div>
+        <button class="cp-order-btn" onclick="closeCartPanel(); goToStep2()">
+          Bestellen →
+        </button>
+      </div>
     </div>
-    <button class="sb-btn" onclick="goToStep2()">Bestellen →</button>
-  </div>
+
+    <!-- ② Always-visible handle row -->
+    <div class="sb-handle">
+      <!-- Left: tap to expand panel -->
+      <div class="sb-tap-zone" onclick="toggleCartPanel()">
+        <div class="sb-summary">
+          <div class="sb-count" id="sb-count">0 artikelen in winkelwagen</div>
+          <div class="sb-price" id="sb-total">€ 0,00</div>
+        </div>
+        <button class="sb-toggle" id="sb-toggle" aria-label="Winkelwagen uitklappen" onclick="event.stopPropagation(); toggleCartPanel()">
+          <span class="sb-toggle-icon">↑</span>
+        </button>
+      </div>
+      <!-- Right: go directly to step 2 -->
+      <button class="sb-btn" onclick="goToStep2()">Bestellen →</button>
+    </div>
+
+  </div><!-- /sticky-bar -->
+
+  <!-- Backdrop — closes panel when tapped -->
+  <div id="cart-backdrop" class="cart-backdrop" onclick="closeCartPanel()"></div>
+
 </div><!-- /step-1 -->
 
 
@@ -558,6 +724,62 @@ function updateStickyBar() {
   }
 }
 
+// ── CART PANEL ─────────────────────────────────────────────────────────────
+function renderCartPanel() {
+  const el = document.getElementById('cp-items');
+  if (!cart.length) {
+    el.innerHTML = '<div class="cart-empty" style="padding:14px 0">Winkelwagen is leeg.</div>';
+  } else {
+    el.innerHTML = cart.map(item => `
+      <div class="cart-item">
+        <div>
+          <div class="cart-item-naam">${item.naam}${item.is_on_demand
+            ? ' <span class="on-demand-badge" style="font-size:10px">Op aanvraag</span>' : ''}</div>
+          <div class="cart-item-sub">Maat ${item.maat}</div>
+        </div>
+        <div class="qty-controls">
+          <button class="qty-btn" onclick="updateQty('${item.sku_key}', -1)">−</button>
+          <span class="qty-num">${item.aantal}</span>
+          <button class="qty-btn" onclick="updateQty('${item.sku_key}', 1)">+</button>
+        </div>
+        <div class="cart-item-prijs">${fmt(item.prijs * item.aantal)}</div>
+        <button class="remove-btn" onclick="removeFromCart('${item.sku_key}')"
+                title="Verwijderen">✕</button>
+      </div>`).join('');
+  }
+  // Update panel summary figures
+  const subtotaal = getSubtotaal();
+  const verzend   = getVerzendkosten();
+  const totaal    = Math.max(0, subtotaal + verzend);
+  document.getElementById('cp-subtotaal').textContent = fmt(subtotaal);
+  document.getElementById('cp-verzend').textContent   =
+    subtotaal >= SETTINGS.gratis_min ? 'Gratis' : fmt(verzend);
+  document.getElementById('cp-totaal').textContent    = fmt(totaal);
+}
+
+function toggleCartPanel() {
+  const panel    = document.getElementById('cart-panel');
+  const toggle   = document.getElementById('sb-toggle');
+  const backdrop = document.getElementById('cart-backdrop');
+  if (panel.classList.contains('open')) {
+    closeCartPanel();
+  } else {
+    renderCartPanel();
+    panel.classList.add('open');
+    toggle.classList.add('open');
+    backdrop.classList.add('visible');
+  }
+}
+
+function closeCartPanel() {
+  document.getElementById('cart-panel').classList.remove('open');
+  document.getElementById('sb-toggle').classList.remove('open');
+  document.getElementById('cart-backdrop').classList.remove('visible');
+}
+
+// Close panel on Escape key
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeCartPanel(); });
+
 // ── PRODUCTS ───────────────────────────────────────────────────────────────
 async function loadProducts() {
   const grid = document.getElementById('products-grid');
@@ -760,6 +982,10 @@ function renderCart() {
   updateSummary();
   validateForm();
   updateStickyBar();
+  // Keep panel contents in sync while it is open
+  if (document.getElementById('cart-panel').classList.contains('open')) {
+    renderCartPanel();
+  }
 }
 
 function updateQty(sku_key, delta) {
@@ -772,9 +998,11 @@ function updateQty(sku_key, delta) {
 function removeFromCart(sku_key) {
   cart = cart.filter(i => i.sku_key !== sku_key);
   renderCart();
-  // If cart is now empty while on step 2, go back to step 1
-  if (!cart.length && document.getElementById('step-2').classList.contains('active')) {
-    goToStep1();
+  if (!cart.length) {
+    closeCartPanel();
+    if (document.getElementById('step-2').classList.contains('active')) {
+      goToStep1();
+    }
   }
 }
 
