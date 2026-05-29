@@ -391,7 +391,7 @@ def send_invoice_email(order_data, pdf_source):
     att.add_header('Content-Disposition', 'attachment', filename=f'factuur_{bestelnummer}.pdf')
     msg.attach(att)
 
-    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+    with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
         server.ehlo()
         server.starttls()
         server.login(gmail_user, gmail_pwd)
@@ -429,7 +429,7 @@ def send_owner_notification(order_data):
     msg['To']      = gmail_user
     msg['Subject'] = f'\U0001f6d2 Nieuwe bestelling #{bestelnummer} – ShoppyBrand'
 
-    with smtplib.SMTP('smtp.gmail.com', 587) as server:
+    with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
         server.ehlo()
         server.starttls()
         server.login(gmail_user, gmail_pwd)
@@ -1855,7 +1855,7 @@ def _do_test_email():
         msg['From']    = f'ShoppyBrand <{GMAIL_USER}>'
         msg['To']      = GMAIL_USER
         msg['Subject'] = 'ShoppyBrand – Test e-mail'
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+        with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
             server.ehlo()
             server.starttls()
             server.login(GMAIL_USER, GMAIL_PASSWORD)
