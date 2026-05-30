@@ -644,7 +644,7 @@ def init_db():
     ''')
 
     # Sequence for bestelnummer — never reuses numbers after deletion
-    c.execute('CREATE SEQUENCE IF NOT EXISTS bestelnummer_seq START 20001')
+    c.execute('CREATE SEQUENCE IF NOT EXISTS bestelnummer_seq START 10001')
 
     c.execute('''
         CREATE TABLE IF NOT EXISTS orders (
@@ -749,14 +749,14 @@ def migrate_db():
             'ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_token UUID DEFAULT gen_random_uuid()'
         )
         # Bestelnummer sequence — ensures numbers are never reused after deletion
-        conn.execute('CREATE SEQUENCE IF NOT EXISTS bestelnummer_seq START 20001')
-        # Advance the sequence above any existing bestelnummer so it never collides
-        row = conn.execute(
-            'SELECT COALESCE(MAX(bestelnummer), 20000) AS mx FROM orders'
-        ).fetchone()
+        conn.execute('CREATE SEQUENCE IF NOT EXISTS bestelnummer_seq START 10001')
+        # Always advance the sequence to MAX(bestelnummer)+1 so it continues
+        # from the highest existing order and never produces a number already used.
+        # GREATEST(..., 10000) ensures the floor is 10001 on an empty table.
+        # is_called=false means the next nextval() returns exactly this value.
         conn.execute(
-            "SELECT setval('bestelnummer_seq', %s, false)",
-            (max(20001, row['mx'] + 1),)
+            "SELECT setval('bestelnummer_seq', "
+            "GREATEST((SELECT MAX(bestelnummer) FROM orders), 10000) + 1, false)"
         )
         # Sequence used for collision-free klant_id generation (STB-04)
         conn.execute('CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1')
