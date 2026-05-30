@@ -1,6 +1,7 @@
 import os
 import io
 import re
+import time
 import atexit
 import traceback
 from datetime import datetime, date, timedelta
@@ -133,13 +134,83 @@ def get_db():
     return _DbConn()
 
 
+_settings_cache: dict = {}
+_settings_ts: float = 0.0
+
 def get_settings():
+    global _settings_cache, _settings_ts
+    if time.time() - _settings_ts < 60:          # serve from cache if < 60s old
+        return _settings_cache
     conn = get_db()
     try:
         rows = conn.execute('SELECT key, value FROM settings').fetchall()
     finally:
         conn.close()
-    return {r['key']: r['value'] for r in rows}
+    _settings_cache = {r['key']: r['value'] for r in rows}
+    _settings_ts    = time.time()
+    return _settings_cache
+
+
+# ── PRODUCT GROUPING HELPER (CQ-03) ──────────────────────────────────────────
+
+def _group_products(rows, group_keys, size_keys, update_foto=False):
+    """
+    Collapse flat product rows into {item_id → group_dict} ordered by first seen.
+
+    group_keys:  field names kept at group level (read from first row per group).
+    size_keys:   field names kept per size variant.
+    update_foto: if True, promote a non-None foto from later rows to the group.
+    """
+    groups: dict = {}
+    order: list  = []
+    for r in rows:
+        iid = r.get('item_id') or r.get('sku_key')
+        if iid not in groups:
+            order.append(iid)
+            groups[iid] = {k: r.get(k) for k in group_keys}
+            groups[iid]['item_id'] = iid
+            groups[iid]['sizes']   = []
+        elif update_foto and not groups[iid].get('foto') and r.get('foto'):
+            groups[iid]['foto'] = r['foto']
+        groups[iid]['sizes'].append({k: r.get(k) for k in size_keys})
+    return {iid: groups[iid] for iid in order}
+
+
+# ── EMAIL HELPERS (CQ-04) ─────────────────────────────────────────────────────
+
+def _resolve_pdf_bytes(pdf_source) -> bytes:
+    """Accept bytes, BytesIO, or a file path and return raw PDF bytes."""
+    if isinstance(pdf_source, (bytes, bytearray)):
+        return bytes(pdf_source)
+    if hasattr(pdf_source, 'read'):
+        return pdf_source.read()
+    with open(pdf_source, 'rb') as fh:
+        return fh.read()
+
+
+def _send_email_with_attachment(to_addr, subject, html_body, pdf_bytes, bestelnummer):
+    """Send one HTML+PDF email via Gmail SMTP. Raises on any failure."""
+    if not GMAIL_USER or not GMAIL_PASSWORD:
+        raise ValueError(
+            'E-mail credentials ontbreken. '
+            'Stel GMAIL_USER en GMAIL_PASSWORD in als omgevingsvariabelen.'
+        )
+    msg = MIMEMultipart('mixed')
+    msg['From']    = f'ShoppyBrand <{GMAIL_USER}>'
+    msg['To']      = to_addr
+    msg['Subject'] = subject
+    msg.attach(MIMEText(html_body, 'html', 'utf-8'))
+
+    att = MIMEApplication(pdf_bytes, _subtype='pdf')
+    att.add_header('Content-Disposition', 'attachment',
+                   filename=f'factuur_{bestelnummer}.pdf')
+    msg.attach(att)
+
+    with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
+        server.ehlo()
+        server.starttls()
+        server.login(GMAIL_USER, GMAIL_PASSWORD)
+        server.sendmail(GMAIL_USER, to_addr, msg.as_bytes())
 
 
 # ── PDF INVOICE ───────────────────────────────────────────────────────────────
@@ -387,19 +458,7 @@ def generate_invoice(order_data, output=None):
 # ── EMAIL ─────────────────────────────────────────────────────────────────────
 
 def send_invoice_email(order_data, pdf_source):
-    """
-    Send the invoice email to the customer.
-
-    pdf_source: bytes, BytesIO, or a file-path string.
-    """
-    gmail_user = GMAIL_USER
-    gmail_pwd  = GMAIL_PASSWORD
-    if not gmail_user or not gmail_pwd:
-        raise ValueError(
-            'E-mail credentials ontbreken. '
-            'Stel GMAIL_USER en GMAIL_PASSWORD in als omgevingsvariabelen.'
-        )
-
+    """Send the order-confirmation email with PDF invoice to the customer."""
     customer_email = order_data.get('email', '').strip()
     if not customer_email:
         raise ValueError('Geen e-mailadres voor klant')
@@ -427,30 +486,13 @@ def send_invoice_email(order_data, pdf_source):
 </body>
 </html>'''
 
-    # Accept bytes, BytesIO, or a file path
-    if isinstance(pdf_source, (bytes, bytearray)):
-        pdf_bytes = bytes(pdf_source)
-    elif hasattr(pdf_source, 'read'):
-        pdf_bytes = pdf_source.read()
-    else:
-        with open(pdf_source, 'rb') as f:
-            pdf_bytes = f.read()
-
-    msg = MIMEMultipart('mixed')
-    msg['From']    = f'ShoppyBrand <{gmail_user}>'
-    msg['To']      = customer_email
-    msg['Subject'] = f'Bevestiging bestelling #{bestelnummer} – ShoppyBrand'
-    msg.attach(MIMEText(html_body, 'html', 'utf-8'))
-
-    att = MIMEApplication(pdf_bytes, _subtype='pdf')
-    att.add_header('Content-Disposition', 'attachment', filename=f'factuur_{bestelnummer}.pdf')
-    msg.attach(att)
-
-    with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(gmail_user, gmail_pwd)
-        server.sendmail(gmail_user, customer_email, msg.as_bytes())
+    _send_email_with_attachment(
+        to_addr=customer_email,
+        subject=f'Bevestiging bestelling #{bestelnummer} – ShoppyBrand',
+        html_body=html_body,
+        pdf_bytes=_resolve_pdf_bytes(pdf_source),
+        bestelnummer=bestelnummer,
+    )
 
 
 def send_owner_notification(order_data):
@@ -493,18 +535,13 @@ def send_owner_notification(order_data):
 
 def send_reminder_email(order_data, pdf_source):
     """Send a payment-reminder email to the customer with the invoice attached."""
-    gmail_user = GMAIL_USER
-    gmail_pwd  = GMAIL_PASSWORD
-    if not gmail_user or not gmail_pwd:
-        raise ValueError('E-mail credentials ontbreken.')
-
     customer_email = order_data.get('email', '').strip()
     if not customer_email:
         raise ValueError('Geen e-mailadres voor klant')
 
-    bestelnummer   = order_data['bestelnummer']
-    naam           = escape(order_data.get('naam') or 'Klant')
-    totaal         = f"{float(order_data['totaalbedrag']):.2f}".replace('.', ',')
+    bestelnummer = order_data['bestelnummer']
+    naam         = escape(order_data.get('naam') or 'Klant')
+    totaal       = f"{float(order_data['totaalbedrag']):.2f}".replace('.', ',')
 
     html_body = f'''<!DOCTYPE html>
 <html>
@@ -533,29 +570,13 @@ def send_reminder_email(order_data, pdf_source):
 </body>
 </html>'''
 
-    if isinstance(pdf_source, (bytes, bytearray)):
-        pdf_bytes = bytes(pdf_source)
-    elif hasattr(pdf_source, 'read'):
-        pdf_bytes = pdf_source.read()
-    else:
-        with open(pdf_source, 'rb') as f:
-            pdf_bytes = f.read()
-
-    msg = MIMEMultipart('mixed')
-    msg['From']    = f'ShoppyBrand <{gmail_user}>'
-    msg['To']      = customer_email
-    msg['Subject'] = f'Herinnering: Je bestelling #{bestelnummer} bij ShoppyBrand'
-    msg.attach(MIMEText(html_body, 'html', 'utf-8'))
-
-    att = MIMEApplication(pdf_bytes, _subtype='pdf')
-    att.add_header('Content-Disposition', 'attachment', filename=f'factuur_{bestelnummer}.pdf')
-    msg.attach(att)
-
-    with smtplib.SMTP('smtp.gmail.com', 587, timeout=10) as server:
-        server.ehlo()
-        server.starttls()
-        server.login(gmail_user, gmail_pwd)
-        server.sendmail(gmail_user, customer_email, msg.as_bytes())
+    _send_email_with_attachment(
+        to_addr=customer_email,
+        subject=f'Herinnering: Je bestelling #{bestelnummer} bij ShoppyBrand',
+        html_body=html_body,
+        pdf_bytes=_resolve_pdf_bytes(pdf_source),
+        bestelnummer=bestelnummer,
+    )
 
 
 def init_db():
@@ -705,9 +726,12 @@ def migrate_db():
             'ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE'
         )
         # Sequence used for collision-free klant_id generation (STB-04)
-        conn.execute(
-            'CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1'
-        )
+        conn.execute('CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1')
+        # Indexes for frequently-queried columns (PERF-04)
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_klant_id       ON orders(klant_id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_betaalstatus   ON orders(betaalstatus)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_besteldatum    ON orders(besteldatum)')
+        conn.execute('CREATE INDEX IF NOT EXISTS idx_order_items_bestelnummer ON order_items(bestelnummer)')
         conn.commit()
         logging.info('migrate_db: schema up to date')
     except Exception:
@@ -750,24 +774,12 @@ def api_products():
     finally:
         conn.close()
 
-    products = {}
-    for r in rows:
-        iid = r['item_id']
-        if iid not in products:
-            products[iid] = {
-                'item_id': iid,
-                'naam': r['naam'],
-                'type': r['type'],
-                'verkoop_prijs': r['verkoop_prijs'],
-                'foto': r['foto'],
-                'sizes': [],
-            }
-        products[iid]['sizes'].append({
-            'sku_key': r['sku_key'],
-            'maat': r['maat'],
-            'voorraad': r['voorraad'],
-        })
-    return jsonify(list(products.values()))
+    groups = _group_products(
+        rows,
+        group_keys=['naam', 'type', 'verkoop_prijs', 'foto'],
+        size_keys=['sku_key', 'maat', 'voorraad'],
+    )
+    return jsonify(list(groups.values()))
 
 
 @app.route('/api/on-demand')
@@ -780,23 +792,12 @@ def api_on_demand():
         ).fetchall()
     finally:
         conn.close()
-    groups = {}
-    for r in rows:
-        iid = r['item_id'] or r['sku_key']
-        if iid not in groups:
-            groups[iid] = {
-                'item_id':      iid,
-                'naam':         r['naam'],
-                'type':         r['type'],
-                'demand_prijs': r['demand_prijs'],
-                'verkoop_prijs':r['verkoop_prijs'],
-                'levertijd':    r['levertijd'],
-                'foto':         r['foto'],
-                'sizes':        [],
-            }
-        elif not groups[iid]['foto'] and r['foto']:
-            groups[iid]['foto'] = r['foto']
-        groups[iid]['sizes'].append({'sku_key': r['sku_key'], 'maat': r['maat']})
+    groups = _group_products(
+        rows,
+        group_keys=['naam', 'type', 'demand_prijs', 'verkoop_prijs', 'levertijd', 'foto'],
+        size_keys=['sku_key', 'maat'],
+        update_foto=True,
+    )
     return jsonify(list(groups.values()))
 
 
@@ -1209,22 +1210,44 @@ def admin_overview():
 def admin_orders_api():
     conn = get_db()
     try:
-        orders = conn.execute('''
-            SELECT o.*, c.naam as klant_naam, c.instagram, c.adres, c.postcode, c.stad, c.land
-            FROM orders o LEFT JOIN customers c ON o.klant_id=c.klant_id
-            ORDER BY o.bestelnummer DESC
+        rows = conn.execute('''
+            SELECT
+                o.bestelnummer, o.klant_id, o.besteldatum, o.verzendmethode,
+                o.verzendkosten, o.actiecode, o.kortingsbedrag, o.subtotaal,
+                o.totaalbedrag, o.bestellingstatus, o.betaalstatus, o.opmerking,
+                o.created_at, o.updated_at, o.reminder_sent,
+                c.naam  AS klant_naam, c.instagram, c.adres, c.postcode, c.stad, c.land,
+                oi.id   AS oi_id, oi.sku_key, oi.product_naam, oi.maat,
+                oi.aantal, oi.prijs_per_stuk, oi.is_on_demand
+            FROM orders o
+            LEFT JOIN customers   c  ON c.klant_id   = o.klant_id
+            LEFT JOIN order_items oi ON oi.bestelnummer = o.bestelnummer
+            ORDER BY o.bestelnummer DESC, oi.id
         ''').fetchall()
-        result = []
-        for o in orders:
-            o_dict = dict(o)
-            items = conn.execute(
-                'SELECT * FROM order_items WHERE bestelnummer = %s', (o['bestelnummer'],)
-            ).fetchall()
-            o_dict['items'] = [dict(i) for i in items]
-            result.append(o_dict)
     finally:
         conn.close()
-    return jsonify(result)
+
+    # Reassemble orders with their items in Python (single query, no N+1)
+    orders_map: dict = {}
+    order_keys: list = []
+    item_fields = {'oi_id', 'sku_key', 'product_naam', 'maat', 'aantal', 'prijs_per_stuk', 'is_on_demand'}
+    for r in rows:
+        bn = r['bestelnummer']
+        if bn not in orders_map:
+            order_keys.append(bn)
+            orders_map[bn] = {k: v for k, v in r.items() if k not in item_fields}
+            orders_map[bn]['items'] = []
+        if r['oi_id'] is not None:
+            orders_map[bn]['items'].append({
+                'id':            r['oi_id'],
+                'sku_key':       r['sku_key'],
+                'product_naam':  r['product_naam'],
+                'maat':          r['maat'],
+                'aantal':        r['aantal'],
+                'prijs_per_stuk':r['prijs_per_stuk'],
+                'is_on_demand':  r['is_on_demand'],
+            })
+    return jsonify([orders_map[bn] for bn in order_keys])
 
 
 @app.route('/admin/api/products')
@@ -1253,18 +1276,25 @@ def admin_customers_api():
         customers = conn.execute(
             'SELECT * FROM customers ORDER BY aantal_bestellingen DESC, totaal_uitgegeven DESC'
         ).fetchall()
-        result = []
-        for cust in customers:
-            c_dict = dict(cust)
-            orders = conn.execute(
-                'SELECT bestelnummer, besteldatum, totaalbedrag, bestellingstatus, betaalstatus '
-                'FROM orders WHERE klant_id=%s ORDER BY bestelnummer DESC',
-                (cust['klant_id'],)
-            ).fetchall()
-            c_dict['orders'] = [dict(o) for o in orders]
-            result.append(c_dict)
+        # Single query for all orders — reassemble in Python (no N+1)
+        all_orders = conn.execute(
+            'SELECT klant_id, bestelnummer, besteldatum, totaalbedrag, '
+            '       bestellingstatus, betaalstatus '
+            'FROM orders ORDER BY bestelnummer DESC'
+        ).fetchall()
     finally:
         conn.close()
+
+    from collections import defaultdict
+    orders_by_klant: dict = defaultdict(list)
+    for o in all_orders:
+        orders_by_klant[o['klant_id']].append(dict(o))
+
+    result = []
+    for cust in customers:
+        c_dict = dict(cust)
+        c_dict['orders'] = orders_by_klant.get(cust['klant_id'], [])
+        result.append(c_dict)
     return jsonify(result)
 
 
@@ -1589,23 +1619,12 @@ def admin_on_demand_grouped():
         'FROM on_demand_products ORDER BY naam, maat'
     ).fetchall()
     conn.close()
-    groups = {}
-    for r in rows:
-        iid = r['item_id'] or r['sku_key']
-        if iid not in groups:
-            groups[iid] = {
-                'item_id':       iid,
-                'naam':          r['naam'],
-                'type':          r['type'],
-                'demand_prijs':  r['demand_prijs'],
-                'verkoop_prijs': r['verkoop_prijs'],
-                'levertijd':     r['levertijd'],
-                'foto':          r['foto'],
-                'sizes':         [],
-            }
-        elif not groups[iid]['foto'] and r['foto']:
-            groups[iid]['foto'] = r['foto']
-        groups[iid]['sizes'].append({'sku_key': r['sku_key'], 'maat': r['maat']})
+    groups = _group_products(
+        rows,
+        group_keys=['naam', 'type', 'demand_prijs', 'verkoop_prijs', 'levertijd', 'foto'],
+        size_keys=['sku_key', 'maat'],
+        update_foto=True,
+    )
 
     def _od_sort(g):
         cat = g['type'] or ''
@@ -1838,32 +1857,18 @@ def admin_products_grouped():
         'FROM products ORDER BY item_id, maat'
     ).fetchall()
     conn.close()
-    groups = {}
-    for r in rows:
-        iid = r['item_id'] or r['sku_key']
-        if iid not in groups:
-            groups[iid] = {
-                'item_id': iid,
-                'naam': r['naam'],
-                'type': r['type'],
-                'aankoop_prijs': r['aankoop_prijs'],
-                'verkoop_prijs': r['verkoop_prijs'],
-                'foto': r['foto'],
-                'sizes': [],
-            }
-        groups[iid]['sizes'].append({
-            'sku_key': r['sku_key'],
-            'maat': r['maat'],
-            'voorraad': r['voorraad'],
-        })
+    groups = _group_products(
+        rows,
+        group_keys=['naam', 'type', 'aankoop_prijs', 'verkoop_prijs', 'foto'],
+        size_keys=['sku_key', 'maat', 'voorraad'],
+    )
 
     def _sort_key(g):
         cat = g['type'] or ''
         idx = _CATEGORY_ORDER.index(cat) if cat in _CATEGORY_ORDER else len(_CATEGORY_ORDER)
         return (idx, (g['naam'] or '').lower())
 
-    sorted_groups = sorted(groups.values(), key=_sort_key)
-    return jsonify({'success': True, 'groups': sorted_groups})
+    return jsonify({'success': True, 'groups': sorted(groups.values(), key=_sort_key)})
 
 
 @app.route('/admin/api/update-item-id', methods=['POST'])
@@ -2115,44 +2120,61 @@ def admin_delete_order():
 
 def check_unpaid_orders():
     """
-    Scheduled job: send one reminder email per unpaid order that is older than
-    24 hours and hasn't already received a reminder.
+    Scheduled job: send one reminder email per unpaid order older than 24 h.
+    Phase 1: fetch all data and immediately close the DB connection.
+    Phase 2: send emails (no DB connection held during slow SMTP calls).
+    Phase 3: open a short-lived connection per order to mark reminder_sent.
     """
     logging.info('check_unpaid_orders: starting run')
     try:
+        # ── Phase 1: fetch, then release connection ────────────────────────
         cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
         conn = get_db()
-        orders = conn.execute('''
-            SELECT o.*, c.naam, c.email, c.instagram
-            FROM orders o
-            LEFT JOIN customers c ON o.klant_id = c.klant_id
-            WHERE o.betaalstatus = 'Onbetaald'
-              AND o.reminder_sent = FALSE
-              AND o.besteldatum < %s
-        ''', (cutoff,)).fetchall()
-        logging.info('check_unpaid_orders: %d order(s) need a reminder', len(orders))
+        try:
+            order_rows = conn.execute('''
+                SELECT o.*, c.naam, c.email, c.instagram
+                FROM orders o
+                LEFT JOIN customers c ON o.klant_id = c.klant_id
+                WHERE o.betaalstatus = 'Onbetaald'
+                  AND o.reminder_sent = FALSE
+                  AND o.besteldatum < %s
+            ''', (cutoff,)).fetchall()
+            orders_data = []
+            for row in order_rows:
+                od = dict(row)
+                items = conn.execute(
+                    'SELECT * FROM order_items WHERE bestelnummer = %s',
+                    (od['bestelnummer'],)
+                ).fetchall()
+                od['items'] = [dict(i) for i in items]
+                orders_data.append(od)
+        finally:
+            conn.close()   # release before any slow SMTP calls
 
-        for row in orders:
-            order_data = dict(row)
+        logging.info('check_unpaid_orders: %d order(s) need a reminder', len(orders_data))
+
+        # ── Phase 2 + 3: send email, then update DB per order ─────────────
+        for order_data in orders_data:
             bestelnummer = order_data['bestelnummer']
-            items = conn.execute(
-                'SELECT * FROM order_items WHERE bestelnummer = %s', (bestelnummer,)
-            ).fetchall()
-            order_data['items'] = [dict(i) for i in items]
-
             try:
                 pdf_buf = generate_invoice(order_data, output=io.BytesIO())
                 send_reminder_email(order_data, pdf_buf)
-                conn.execute(
-                    'UPDATE orders SET reminder_sent = TRUE, updated_at = %s WHERE bestelnummer = %s',
-                    (datetime.now().isoformat(), bestelnummer)
-                )
-                conn.commit()
+
+                upd = get_db()
+                try:
+                    upd.execute(
+                        'UPDATE orders SET reminder_sent = TRUE, updated_at = %s '
+                        'WHERE bestelnummer = %s',
+                        (datetime.now().isoformat(), bestelnummer)
+                    )
+                    upd.commit()
+                finally:
+                    upd.close()
+
                 logging.info('check_unpaid_orders: reminder sent for order %s', bestelnummer)
             except Exception:
                 logging.exception('check_unpaid_orders: failed for order %s', bestelnummer)
 
-        conn.close()
     except Exception:
         logging.exception('check_unpaid_orders: job crashed')
 
@@ -2160,7 +2182,12 @@ def check_unpaid_orders():
 # ── STARTUP (runs when gunicorn imports the module) ───────────────────────────
 
 try:
-    migrate_db()
+    init_db()     # CREATE TABLE IF NOT EXISTS — safe to run every boot (CQ-06)
+except Exception:
+    logging.exception('init_db failed at startup')
+
+try:
+    migrate_db()  # ALTER TABLE / CREATE INDEX / CREATE SEQUENCE
 except Exception:
     logging.exception('migrate_db failed at startup — app continues; some features may be degraded')
 
