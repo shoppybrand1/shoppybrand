@@ -1285,7 +1285,7 @@ async function actuallySubmitOrder() {
     const result = await res.json();
 
     if (result.success) {
-      window.location.href = `/success/${result.bestelnummer}`;
+      window.location.href = `/success/${result.order_token}`;
     } else {
       closeConfirmModal();
       showToast(result.error || 'Er is een fout opgetreden.', 'error');

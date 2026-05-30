@@ -3,7 +3,6 @@ import io
 import re
 import time
 import atexit
-import traceback
 from datetime import datetime, date, timedelta
 from functools import wraps
 from html import escape
@@ -53,6 +52,12 @@ DATABASE_URL   = os.getenv('DATABASE_URL')
 ADMIN_PASSWORD = os.environ['ADMIN_PASSWORD']    # must be set — no fallback
 INVOICES_DIR   = os.path.join(BASE_DIR, 'data', 'invoices')
 BASE_URL       = os.getenv('BASE_URL', 'https://shoppybrand.onrender.com')
+
+# CQ-07: moved here from mid-file so it is defined before first use
+_CATEGORY_ORDER = ['Sneakers', 'Tracksuits', 'Horloges', 'Accessoires']
+
+# PERF-05: incremented whenever product stock changes; clients use it as ETag seed
+_products_version: int = 0
 
 cloudinary.config(cloudinary_url=os.getenv('CLOUDINARY_URL', ''))
 
@@ -136,6 +141,12 @@ def get_db():
 
 _settings_cache: dict = {}
 _settings_ts: float = 0.0
+
+
+def _invalidate_products_cache():
+    """Increment the ETag seed so the next /api/products fetch bypasses the browser cache."""
+    global _products_version
+    _products_version += 1
 
 def get_settings():
     global _settings_cache, _settings_ts
@@ -648,7 +659,8 @@ def init_db():
             opmerking TEXT,
             created_at TEXT,
             updated_at TEXT,
-            reminder_sent BOOLEAN DEFAULT FALSE
+            reminder_sent BOOLEAN DEFAULT FALSE,
+            order_token UUID DEFAULT gen_random_uuid()
         )
     ''')
 
@@ -725,6 +737,10 @@ def migrate_db():
         conn.execute(
             'ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE'
         )
+        # SEC-07: opaque token used in the success URL instead of the sequential integer PK
+        conn.execute(
+            'ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_token UUID DEFAULT gen_random_uuid()'
+        )
         # Sequence used for collision-free klant_id generation (STB-04)
         conn.execute('CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1')
         # Indexes for frequently-queried columns (PERF-04)
@@ -779,7 +795,10 @@ def api_products():
         group_keys=['naam', 'type', 'verkoop_prijs', 'foto'],
         size_keys=['sku_key', 'maat', 'voorraad'],
     )
-    return jsonify(list(groups.values()))
+    resp = jsonify(list(groups.values()))
+    resp.headers['Cache-Control'] = 'public, max-age=30'
+    resp.headers['ETag'] = f'"{_products_version}"'
+    return resp
 
 
 @app.route('/api/on-demand')
@@ -798,7 +817,10 @@ def api_on_demand():
         size_keys=['sku_key', 'maat'],
         update_foto=True,
     )
-    return jsonify(list(groups.values()))
+    resp = jsonify(list(groups.values()))
+    resp.headers['Cache-Control'] = 'public, max-age=30'
+    resp.headers['ETag'] = f'"{_products_version}"'
+    return resp
 
 
 @app.route('/api/customer')
@@ -997,10 +1019,12 @@ def submit_order():
             (klant_id, besteldatum, verzendmethode, verzendkosten, actiecode, kortingsbedrag,
              subtotaal, totaalbedrag, bestellingstatus, betaalstatus, opmerking, created_at, updated_at)
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Ontvangen', 'Onbetaald', %s, %s, %s)
-            RETURNING bestelnummer
+            RETURNING bestelnummer, order_token
         ''', (klant_id, now, verzendmethode, verzendkosten, actiecode,
               kortingsbedrag, subtotaal, totaalbedrag, data.get('opmerking') or None, now, now))
-        bestelnummer = cur.fetchone()['bestelnummer']
+        row = cur.fetchone()
+        bestelnummer = row['bestelnummer']
+        order_token  = str(row['order_token'])
 
         for item in data['items']:
             is_od = int(item.get('is_on_demand', 0))
@@ -1094,7 +1118,8 @@ def submit_order():
                 logging.exception('Invoice email failed for order %s', bestelnummer)
         else:
             logging.error('Skipping invoice email for order %s: PDF not generated', bestelnummer)
-        session['email_sent'] = email_sent
+        session['email_sent']  = email_sent
+        session['order_token'] = order_token   # used by the success redirect
 
         # ── Cache PDF to disk for admin panel (best-effort) ───────────────
         try:
@@ -1115,7 +1140,7 @@ def submit_order():
         except Exception:
             logging.exception('Owner notification failed for order %s', bestelnummer)
 
-        return jsonify({'success': True, 'bestelnummer': bestelnummer})
+        return jsonify({'success': True, 'bestelnummer': bestelnummer, 'order_token': order_token})
 
     except Exception as e:
         conn.rollback()
@@ -1124,18 +1149,19 @@ def submit_order():
         conn.close()
 
 
-@app.route('/success/<int:bestelnummer>')
-def success(bestelnummer):
+@app.route('/success/<order_token>')
+def success(order_token):
     email_sent = session.pop('email_sent', True)  # default True avoids false warnings on direct nav
     conn = get_db()
     try:
         order_row = conn.execute(
-            'SELECT * FROM orders WHERE bestelnummer = %s', (bestelnummer,)
+            'SELECT * FROM orders WHERE order_token = %s', (order_token,)
         ).fetchone()
     finally:
         conn.close()
     if not order_row:
         return redirect('/')
+    bestelnummer = order_row['bestelnummer']
     return render_template('success.html', bestelnummer=bestelnummer,
                            order=dict(order_row), email_sent=email_sent)
 
@@ -1335,6 +1361,7 @@ def admin_update_stock():
     )
     conn.commit()
     conn.close()
+    _invalidate_products_cache()
     return jsonify({'success': True})
 
 
@@ -1520,13 +1547,12 @@ def admin_delete_product():
 @app.route('/admin/api/add-on-demand', methods=['POST'])
 @admin_required
 def admin_add_on_demand():
-    import re as _re
     data = request.get_json()
     naam = (data.get('naam') or '').strip()
     maat = (data.get('maat') or '').strip()
     if not naam:
         return jsonify({'success': False, 'error': 'Naam is verplicht'}), 400
-    slug = _re.sub(r'[^a-z0-9]+', '-', naam.lower()).strip('-')
+    slug = re.sub(r'[^a-z0-9]+', '-', naam.lower()).strip('-')
     custom_sku = (data.get('sku_key') or '').strip()
     sku_key = custom_sku if custom_sku else (f'OD-{slug}-{maat}' if maat else f'OD-{slug}')
     now = datetime.now().isoformat()
@@ -1845,9 +1871,6 @@ def admin_update_sku():
         return jsonify({'success': False, 'error': f'SKU "{new_sku}" bestaat al'}), 400
 
 
-_CATEGORY_ORDER = ['Sneakers', 'Tracksuits', 'Horloges', 'Accessoires']
-
-
 @app.route('/admin/api/products-grouped')
 @admin_required
 def admin_products_grouped():
@@ -1934,6 +1957,7 @@ def admin_update_size_stock():
     conn.execute('UPDATE products SET voorraad=%s WHERE sku_key=%s', (int(voorraad), sku_key))
     conn.commit()
     conn.close()
+    _invalidate_products_cache()
     return jsonify({'success': True})
 
 
