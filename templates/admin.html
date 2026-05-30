@@ -201,9 +201,10 @@
         <table class="admin-table" id="orders-table">
           <thead><tr>
             <th>#</th><th>Klant</th><th>Instagram</th><th>Datum</th>
-            <th>Totaal</th><th>Bestellingstatus</th><th>Betaalstatus</th><th>Actie</th>
+            <th>Totaal</th><th>Bestellingstatus</th><th>Betaalstatus</th>
+            <th>Platform</th><th>Actie</th>
           </tr></thead>
-          <tbody id="orders-body"><tr><td colspan="8" style="text-align:center;padding:24px;color:var(--grey-dk)">Laden...</td></tr></tbody>
+          <tbody id="orders-body"><tr><td colspan="9" style="text-align:center;padding:24px;color:var(--grey-dk)">Laden...</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -963,8 +964,10 @@ async function saveOdProduct() {
 }
 
 // ── 3. BESTELLINGEN ────────────────────────────────────────────────────────
-const BESTELLING_STATUSSEN = ['Ontvangen','In behandeling','Verzonden','Bezorgd','Geannuleerd'];
-const BETAAL_STATUSSEN = ['Onbetaald','Betaald','Terugbetaald'];
+const BESTELLING_STATUSSEN  = ['Ontvangen','In behandeling','Verzonden','Bezorgd','Geannuleerd'];
+const BETAAL_STATUSSEN      = ['Onbetaald','Betaald','Terugbetaald'];
+const VERKOOPPLATFORM_OPTS  = ['','Instagram','Marktplaats','Telefoon'];
+const BETAALMETHODE_OPTS    = ['','ING','PayPal','Contant','Anders'];
 
 const BSTATUS_COLORS = {
   'Ontvangen':      '#dc3545',
@@ -974,35 +977,42 @@ const BSTATUS_COLORS = {
   'Geannuleerd':    '#6c757d',
 };
 const BPAY_COLORS = {
-  'Onbetaald':   '#dc3545',
-  'Betaald':     '#198754',
-  'Terugbetaald':'#6c757d',
+  'Onbetaald':    '#dc3545',
+  'Betaald':      '#198754',
+  'Terugbetaald': '#6c757d',
 };
 
 function statusSelectStyle(colorMap, value) {
   const bg = colorMap[value] || '#6c757d';
   return `background:${bg};color:#fff;border-color:${bg};font-weight:600`;
 }
-
 function statusBadgePill(text, colorMap) {
   const bg = colorMap[text] || '#6c757d';
   return `<span style="display:inline-block;padding:2px 9px;border-radius:12px;font-size:11px;font-weight:700;background:${bg};color:#fff;white-space:nowrap">${text}</span>`;
+}
+function fmtDateTime(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return iso;
+  const p = n => String(n).padStart(2,'0');
+  return `${p(d.getDate())}-${p(d.getMonth()+1)}-${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 async function loadBestellingen() {
   const orders = await apiFetch('/admin/api/orders');
   const tb = document.getElementById('orders-body');
   if (!orders.length) {
-    tb.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:var(--grey-dk)">Geen bestellingen</td></tr>';
+    tb.innerHTML = '<tr><td colspan="9" style="text-align:center;padding:20px;color:var(--grey-dk)">Geen bestellingen</td></tr>';
     return;
   }
   tb.innerHTML = orders.map(o => {
-    const detailId = `detail-${o.bestelnummer}`;
+    const detailId  = `detail-${o.bestelnummer}`;
     const itemsHtml = o.items.map(i =>
       `<tr><td>${i.sku_key}</td><td>${i.product_naam}</td><td>${i.maat}</td>
        <td>${i.aantal}x</td><td>${fmt(i.prijs_per_stuk)}</td>
        <td>${i.is_on_demand ? '<span class="badge badge-gold">Op aanvraag</span>' : ''}</td></tr>`
     ).join('');
+    const betaaldatumTxt = fmtDateTime(o.betaaldatum);
     return `
     <tr class="expandable" onclick="toggleDetail('${detailId}')">
       <td><strong>#${o.bestelnummer}</strong></td>
@@ -1025,6 +1035,18 @@ async function loadBestellingen() {
           ${BETAAL_STATUSSEN.map(s =>
             `<option ${s===o.betaalstatus?'selected':''}>${s}</option>`).join('')}
         </select>
+        <div id="betaaldatum-${o.bestelnummer}"
+             style="font-size:10px;color:var(--grey-dk);margin-top:3px;line-height:1.3">
+          ${betaaldatumTxt}
+        </div>
+      </td>
+      <td onclick="event.stopPropagation()">
+        <select class="status-select"
+          style="background:#f8f9fa;color:#333;border:1px solid var(--grey-md);font-weight:500;min-width:100px"
+          onchange="updateStatus(${o.bestelnummer},'verkoopplatform',this.value)">
+          ${VERKOOPPLATFORM_OPTS.map(p =>
+            `<option ${p===(o.verkoopplatform||'')?'selected':''}>${p}</option>`).join('')}
+        </select>
       </td>
       <td onclick="event.stopPropagation()">
         <div style="display:flex;gap:4px">
@@ -1039,9 +1061,9 @@ async function loadBestellingen() {
       </td>
     </tr>
     <tr class="expand-row" id="${detailId}">
-      <td colspan="8">
+      <td colspan="9">
         <div class="expand-content" id="${detailId}-content">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:12px">
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px">
             <div>
               <strong>Adres:</strong><br>
               ${o.adres || '–'}, ${o.postcode || ''} ${o.stad || ''}<br>
@@ -1051,6 +1073,28 @@ async function loadBestellingen() {
               <strong>Verzending:</strong> ${o.verzendmethode} (${fmt(o.verzendkosten)})<br>
               <strong>Korting:</strong> ${o.actiecode ? `${o.actiecode} (–${fmt(o.kortingsbedrag)})` : '–'}<br>
               <strong>Opmerking:</strong> ${o.opmerking || '–'}
+            </div>
+          </div>
+          <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:14px;padding-top:10px;border-top:1px solid var(--grey-md)">
+            <div>
+              <strong style="font-size:12px;color:var(--grey-dk)">BETAALMETHODE</strong><br>
+              <select class="status-select"
+                style="margin-top:5px;background:#f8f9fa;color:#333;border:1px solid var(--grey-md);font-weight:500;min-width:120px"
+                onchange="updateStatus(${o.bestelnummer},'betaalmethode',this.value)">
+                ${BETAALMETHODE_OPTS.map(m =>
+                  `<option ${m===(o.betaalmethode||'')?'selected':''}>${m}</option>`).join('')}
+              </select>
+            </div>
+            <div>
+              <strong style="font-size:12px;color:var(--grey-dk)">TRACK &amp; TRACE</strong><br>
+              <div style="display:flex;gap:6px;margin-top:5px;align-items:center">
+                <input type="text" id="tt-${o.bestelnummer}" class="form-control"
+                  style="font-size:13px;padding:5px 10px;max-width:240px"
+                  value="${(o.track_trace || '').replace(/"/g,'&quot;')}"
+                  placeholder="Trackingnummer">
+                <button class="admin-btn admin-btn-sm admin-btn-primary"
+                  onclick="saveTrackTrace(${o.bestelnummer})">Opslaan</button>
+              </div>
             </div>
           </div>
           <table class="admin-table" style="font-size:12px">
@@ -1074,12 +1118,28 @@ async function updateStatus(bestelnummer, field, value) {
     body: JSON.stringify({bestelnummer, field, value})
   });
   if (r.success) {
-    showToast('Status bijgewerkt', 'success');
-    const selId    = field === 'bestellingstatus' ? `bsselect-${bestelnummer}` : `bpselect-${bestelnummer}`;
-    const colorMap = field === 'bestellingstatus' ? BSTATUS_COLORS : BPAY_COLORS;
-    const el = document.getElementById(selId);
-    if (el) el.setAttribute('style', statusSelectStyle(colorMap, value));
-  } else showToast(r.error, 'error');
+    showToast('Opgeslagen', 'success');
+    if (field === 'bestellingstatus') {
+      const el = document.getElementById(`bsselect-${bestelnummer}`);
+      if (el) el.setAttribute('style', statusSelectStyle(BSTATUS_COLORS, value));
+    } else if (field === 'betaalstatus') {
+      const el = document.getElementById(`bpselect-${bestelnummer}`);
+      if (el) el.setAttribute('style', statusSelectStyle(BPAY_COLORS, value));
+      // Update betaaldatum display immediately without reloading
+      const dtEl = document.getElementById(`betaaldatum-${bestelnummer}`);
+      if (dtEl) dtEl.textContent = value === 'Betaald' ? fmtDateTime(new Date().toISOString()) : '';
+    }
+  } else showToast(r.error || 'Fout bij opslaan', 'error');
+}
+
+async function saveTrackTrace(bestelnummer) {
+  const inp = document.getElementById(`tt-${bestelnummer}`);
+  if (!inp) return;
+  const r = await apiFetch('/admin/api/update-track-trace', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({bestelnummer, track_trace: inp.value.trim()})
+  });
+  showToast(r.success ? 'Track & Trace opgeslagen' : (r.error || 'Fout'), r.success ? 'success' : 'error');
 }
 
 async function resendInvoice(bestelnummer) {

@@ -643,9 +643,12 @@ def init_db():
         )
     ''')
 
+    # Sequence for bestelnummer — never reuses numbers after deletion
+    c.execute('CREATE SEQUENCE IF NOT EXISTS bestelnummer_seq START 20001')
+
     c.execute('''
         CREATE TABLE IF NOT EXISTS orders (
-            bestelnummer SERIAL PRIMARY KEY,
+            bestelnummer INTEGER PRIMARY KEY DEFAULT nextval('bestelnummer_seq'),
             klant_id TEXT,
             besteldatum TEXT,
             verzendmethode TEXT,
@@ -660,7 +663,11 @@ def init_db():
             created_at TEXT,
             updated_at TEXT,
             reminder_sent BOOLEAN DEFAULT FALSE,
-            order_token UUID DEFAULT gen_random_uuid()
+            order_token UUID DEFAULT gen_random_uuid(),
+            verkoopplatform VARCHAR(50),
+            betaaldatum TIMESTAMP,
+            betaalmethode VARCHAR(50),
+            track_trace VARCHAR(100)
         )
     ''')
 
@@ -741,8 +748,23 @@ def migrate_db():
         conn.execute(
             'ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_token UUID DEFAULT gen_random_uuid()'
         )
+        # Bestelnummer sequence — ensures numbers are never reused after deletion
+        conn.execute('CREATE SEQUENCE IF NOT EXISTS bestelnummer_seq START 20001')
+        # Advance the sequence above any existing bestelnummer so it never collides
+        row = conn.execute(
+            'SELECT COALESCE(MAX(bestelnummer), 20000) AS mx FROM orders'
+        ).fetchone()
+        conn.execute(
+            "SELECT setval('bestelnummer_seq', %s, false)",
+            (max(20001, row['mx'] + 1),)
+        )
         # Sequence used for collision-free klant_id generation (STB-04)
         conn.execute('CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1')
+        # New order fields
+        conn.execute('ALTER TABLE orders ADD COLUMN IF NOT EXISTS verkoopplatform VARCHAR(50)')
+        conn.execute('ALTER TABLE orders ADD COLUMN IF NOT EXISTS betaaldatum TIMESTAMP')
+        conn.execute('ALTER TABLE orders ADD COLUMN IF NOT EXISTS betaalmethode VARCHAR(50)')
+        conn.execute('ALTER TABLE orders ADD COLUMN IF NOT EXISTS track_trace VARCHAR(100)')
         # Indexes for frequently-queried columns (PERF-04)
         conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_klant_id       ON orders(klant_id)')
         conn.execute('CREATE INDEX IF NOT EXISTS idx_orders_betaalstatus   ON orders(betaalstatus)')
@@ -1016,9 +1038,11 @@ def submit_order():
 
         cur = conn.execute('''
             INSERT INTO orders
-            (klant_id, besteldatum, verzendmethode, verzendkosten, actiecode, kortingsbedrag,
-             subtotaal, totaalbedrag, bestellingstatus, betaalstatus, opmerking, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'Ontvangen', 'Onbetaald', %s, %s, %s)
+            (bestelnummer, klant_id, besteldatum, verzendmethode, verzendkosten, actiecode,
+             kortingsbedrag, subtotaal, totaalbedrag, bestellingstatus, betaalstatus,
+             opmerking, created_at, updated_at)
+            VALUES (nextval('bestelnummer_seq'), %s, %s, %s, %s, %s, %s, %s, %s,
+                    'Ontvangen', 'Onbetaald', %s, %s, %s)
             RETURNING bestelnummer, order_token
         ''', (klant_id, now, verzendmethode, verzendkosten, actiecode,
               kortingsbedrag, subtotaal, totaalbedrag, data.get('opmerking') or None, now, now))
@@ -1242,6 +1266,8 @@ def admin_orders_api():
                 o.verzendkosten, o.actiecode, o.kortingsbedrag, o.subtotaal,
                 o.totaalbedrag, o.bestellingstatus, o.betaalstatus, o.opmerking,
                 o.created_at, o.updated_at, o.reminder_sent,
+                o.verkoopplatform, o.betaalmethode, o.track_trace,
+                to_char(o.betaaldatum, 'YYYY-MM-DD"T"HH24:MI:SS') AS betaaldatum,
                 c.naam  AS klant_naam, c.instagram, c.adres, c.postcode, c.stad, c.land,
                 oi.id   AS oi_id, oi.sku_key, oi.product_naam, oi.maat,
                 oi.aantal, oi.prijs_per_stuk, oi.is_on_demand
@@ -1336,14 +1362,51 @@ def admin_discounts_api():
 @app.route('/admin/api/update-status', methods=['POST'])
 @admin_required
 def admin_update_status():
-    data = request.get_json()
-    field = data.get('field')
-    if field not in ('bestellingstatus', 'betaalstatus'):
+    data        = request.get_json()
+    field       = data.get('field')
+    value       = data.get('value', '')
+    bestelnummer = data.get('bestelnummer')
+    allowed = {'bestellingstatus', 'betaalstatus', 'verkoopplatform', 'betaalmethode'}
+    if field not in allowed:
         return jsonify({'success': False, 'error': 'Ongeldig veld'}), 400
+    now  = datetime.now().isoformat()
+    conn = get_db()
+    if field == 'betaalstatus':
+        # Automatically set/clear betaaldatum when payment status changes
+        if value == 'Betaald':
+            conn.execute(
+                'UPDATE orders SET betaalstatus=%s, betaaldatum=NOW(), updated_at=%s '
+                'WHERE bestelnummer=%s',
+                (value, now, bestelnummer)
+            )
+        else:
+            conn.execute(
+                'UPDATE orders SET betaalstatus=%s, betaaldatum=NULL, updated_at=%s '
+                'WHERE bestelnummer=%s',
+                (value, now, bestelnummer)
+            )
+    else:
+        conn.execute(
+            f'UPDATE orders SET {field}=%s, updated_at=%s WHERE bestelnummer=%s',
+            (value, now, bestelnummer)
+        )
+    conn.commit()
+    conn.close()
+    return jsonify({'success': True})
+
+
+@app.route('/admin/api/update-track-trace', methods=['POST'])
+@admin_required
+def admin_update_track_trace():
+    data         = request.get_json()
+    bestelnummer = data.get('bestelnummer')
+    track_trace  = (data.get('track_trace') or '').strip()[:100]
+    if not bestelnummer:
+        return jsonify({'success': False, 'error': 'Bestelnummer vereist'}), 400
     conn = get_db()
     conn.execute(
-        f'UPDATE orders SET {field}=%s, updated_at=%s WHERE bestelnummer=%s',
-        (data['value'], datetime.now().isoformat(), data['bestelnummer'])
+        'UPDATE orders SET track_trace=%s, updated_at=%s WHERE bestelnummer=%s',
+        (track_trace or None, datetime.now().isoformat(), bestelnummer)
     )
     conn.commit()
     conn.close()
