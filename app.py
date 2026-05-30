@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from whitenoise import WhiteNoise
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from psycopg2 import pool as _pg_pool
 import psycopg2.errors
 import smtplib
 import logging
@@ -41,17 +42,30 @@ if not GMAIL_PASSWORD:
     logging.warning('GMAIL_PASSWORD environment variable is not set — emails will not send')
 
 app = Flask(__name__)
-app.secret_key = os.getenv('SECRET_KEY', 'sb_secret_key_2024_#xP9mQ')
+app.secret_key = os.environ['SECRET_KEY']       # must be set — no fallback
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DATABASE_URL = os.getenv('DATABASE_URL')
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD', 'shoppybrand')
-INVOICES_DIR = os.path.join(BASE_DIR, 'data', 'invoices')
+DATABASE_URL   = os.getenv('DATABASE_URL')
+ADMIN_PASSWORD = os.environ['ADMIN_PASSWORD']    # must be set — no fallback
+INVOICES_DIR   = os.path.join(BASE_DIR, 'data', 'invoices')
 
 cloudinary.config(cloudinary_url=os.getenv('CLOUDINARY_URL', ''))
 
 # Serve static files in production (gunicorn has no built-in static handler)
 app.wsgi_app = WhiteNoise(app.wsgi_app, root=os.path.join(BASE_DIR, 'static'), prefix='static')
+
+# ── CONNECTION POOL (STB-01) ──────────────────────────────────────────────────
+_pool = None
+if DATABASE_URL:
+    try:
+        _pool = _pg_pool.ThreadedConnectionPool(
+            minconn=2, maxconn=10,
+            dsn=DATABASE_URL,
+            cursor_factory=RealDictCursor,
+        )
+        logging.info('DB connection pool ready (min=2, max=10)')
+    except Exception:
+        logging.exception('Failed to initialise DB connection pool')
 
 
 # ── RATE LIMITING ─────────────────────────────────────────────────────────────
@@ -80,10 +94,12 @@ def rate_limit_exceeded(e):
 # ── DATABASE ──────────────────────────────────────────────────────────────────
 
 class _DbConn:
-    """Thin wrapper around psycopg2 providing sqlite3-compatible interface."""
+    """Thin wrapper that borrows a connection from the pool."""
 
     def __init__(self):
-        self._conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        if _pool is None:
+            raise RuntimeError('DB pool not initialised — check DATABASE_URL env var')
+        self._conn = _pool.getconn()
 
     def execute(self, query, params=None):
         cur = self._conn.cursor()
@@ -100,7 +116,13 @@ class _DbConn:
         self._conn.rollback()
 
     def close(self):
-        self._conn.close()
+        # Ensure clean state before returning the connection to the pool.
+        # rollback() is a no-op when nothing is pending (post-commit).
+        try:
+            self._conn.rollback()
+        except Exception:
+            pass
+        _pool.putconn(self._conn)
 
 
 def get_db():
@@ -109,8 +131,10 @@ def get_db():
 
 def get_settings():
     conn = get_db()
-    rows = conn.execute('SELECT key, value FROM settings').fetchall()
-    conn.close()
+    try:
+        rows = conn.execute('SELECT key, value FROM settings').fetchall()
+    finally:
+        conn.close()
     return {r['key']: r['value'] for r in rows}
 
 
@@ -670,11 +694,15 @@ def init_db():
 
 
 def migrate_db():
-    """Add columns that didn't exist in the original schema (idempotent)."""
+    """Apply idempotent schema additions on every startup."""
     conn = get_db()
     try:
         conn.execute(
             'ALTER TABLE orders ADD COLUMN IF NOT EXISTS reminder_sent BOOLEAN DEFAULT FALSE'
+        )
+        # Sequence used for collision-free klant_id generation (STB-04)
+        conn.execute(
+            'CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1'
         )
         conn.commit()
         logging.info('migrate_db: schema up to date')
@@ -709,12 +737,14 @@ def order():
 @app.route('/api/products')
 def api_products():
     conn = get_db()
-    rows = conn.execute(
-        "SELECT sku_key, item_id, naam, type, maat, voorraad, verkoop_prijs, foto "
-        "FROM products ORDER BY naam, "
-        "CASE WHEN maat ~ '^[0-9]+([.][0-9]+)?$' THEN maat::float ELSE 0::float END, maat"
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            "SELECT sku_key, item_id, naam, type, maat, voorraad, verkoop_prijs, foto "
+            "FROM products ORDER BY naam, "
+            "CASE WHEN maat ~ '^[0-9]+([.][0-9]+)?$' THEN maat::float ELSE 0::float END, maat"
+        ).fetchall()
+    finally:
+        conn.close()
 
     products = {}
     for r in rows:
@@ -739,11 +769,13 @@ def api_products():
 @app.route('/api/on-demand')
 def api_on_demand():
     conn = get_db()
-    rows = conn.execute(
-        'SELECT sku_key, item_id, naam, type, maat, demand_prijs, verkoop_prijs, levertijd, foto '
-        'FROM on_demand_products ORDER BY naam, maat'
-    ).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute(
+            'SELECT sku_key, item_id, naam, type, maat, demand_prijs, verkoop_prijs, levertijd, foto '
+            'FROM on_demand_products ORDER BY naam, maat'
+        ).fetchall()
+    finally:
+        conn.close()
     groups = {}
     for r in rows:
         iid = r['item_id'] or r['sku_key']
@@ -772,8 +804,10 @@ def api_customer():
     if not instagram.startswith('@'):
         instagram = '@' + instagram
     conn = get_db()
-    row = conn.execute('SELECT * FROM customers WHERE instagram = %s', (instagram,)).fetchone()
-    conn.close()
+    try:
+        row = conn.execute('SELECT * FROM customers WHERE instagram = %s', (instagram,)).fetchone()
+    finally:
+        conn.close()
     return jsonify(dict(row) if row else None)
 
 
@@ -790,41 +824,37 @@ def api_discount():
         return jsonify({'valid': False, 'bericht': 'Voer een code in'})
 
     conn = get_db()
-    d = conn.execute('SELECT * FROM discount_codes WHERE code = %s', (code,)).fetchone()
+    try:
+        d = conn.execute('SELECT * FROM discount_codes WHERE code = %s', (code,)).fetchone()
 
-    if not d:
-        conn.close()
-        return jsonify({'valid': False, 'bericht': 'Ongeldige kortingscode'})
-    if not d['actief']:
-        conn.close()
-        return jsonify({'valid': False, 'bericht': 'Deze kortingscode is niet meer geldig'})
-    if d['eind_datum']:
-        try:
-            if datetime.fromisoformat(d['eind_datum']).date() < date.today():
-                conn.close()
-                return jsonify({'valid': False, 'bericht': 'Deze kortingscode is verlopen'})
-        except ValueError:
-            pass
-    if d['minimum_bestelbedrag'] and subtotal < float(d['minimum_bestelbedrag']):
-        conn.close()
-        return jsonify({'valid': False, 'bericht': f'Minimum bestelbedrag {float(d["minimum_bestelbedrag"]):.2f} vereist'})
+        if not d:
+            return jsonify({'valid': False, 'bericht': 'Ongeldige kortingscode'})
+        if not d['actief']:
+            return jsonify({'valid': False, 'bericht': 'Deze kortingscode is niet meer geldig'})
+        if d['eind_datum']:
+            try:
+                if datetime.fromisoformat(d['eind_datum']).date() < date.today():
+                    return jsonify({'valid': False, 'bericht': 'Deze kortingscode is verlopen'})
+            except ValueError:
+                pass
+        if d['minimum_bestelbedrag'] and subtotal < float(d['minimum_bestelbedrag']):
+            return jsonify({'valid': False, 'bericht': f'Minimum bestelbedrag {float(d["minimum_bestelbedrag"]):.2f} vereist'})
 
-    # Per-klant eenmalig check
-    if d['eenmalig'] and instagram:
-        ig = instagram if instagram.startswith('@') else '@' + instagram
-        klant = conn.execute(
-            'SELECT klant_id FROM customers WHERE instagram = %s', (ig,)
-        ).fetchone()
-        if klant:
-            used = conn.execute(
-                'SELECT 1 FROM discount_usage WHERE code = %s AND klant_id = %s',
-                (code, klant['klant_id'])
+        # Per-klant eenmalig check
+        if d['eenmalig'] and instagram:
+            ig = instagram if instagram.startswith('@') else '@' + instagram
+            klant = conn.execute(
+                'SELECT klant_id FROM customers WHERE instagram = %s', (ig,)
             ).fetchone()
-            if used:
-                conn.close()
-                return jsonify({'valid': False, 'bericht': 'Je hebt deze code al gebruikt'})
-
-    conn.close()
+            if klant:
+                used = conn.execute(
+                    'SELECT 1 FROM discount_usage WHERE code = %s AND klant_id = %s',
+                    (code, klant['klant_id'])
+                ).fetchone()
+                if used:
+                    return jsonify({'valid': False, 'bericht': 'Je hebt deze code al gebruikt'})
+    finally:
+        conn.close()
 
     if d['type'] == 'PERCENTAGE':
         kortingsbedrag = round(subtotal * float(d['waarde']) / 100, 2)
@@ -875,11 +905,8 @@ def submit_order():
         if existing:
             klant_id = existing['klant_id']
         else:
-            max_row = conn.execute(
-                "SELECT MAX(CAST(SUBSTRING(klant_id, 3) AS INTEGER)) AS max_num "
-                "FROM customers WHERE klant_id LIKE 'KL%'"
-            ).fetchone()
-            next_num = (max_row['max_num'] or 0) + 1
+            # Sequence guarantees uniqueness under concurrent orders (STB-04)
+            next_num = conn.execute("SELECT nextval('klant_id_seq')").fetchone()[0]
             klant_id = f'KL{str(next_num).zfill(4)}'
             conn.execute('''
                 INSERT INTO customers
@@ -915,12 +942,10 @@ def submit_order():
             ).fetchone()
             if discount:
                 if discount['minimum_bestelbedrag'] and subtotaal < float(discount['minimum_bestelbedrag']):
-                    conn.close()
                     return jsonify({'success': False, 'error': 'Minimum bestelbedrag niet bereikt'}), 400
                 if discount['eind_datum']:
                     try:
                         if datetime.fromisoformat(discount['eind_datum']).date() < date.today():
-                            conn.close()
                             return jsonify({'success': False, 'error': 'Kortingscode is verlopen'}), 400
                     except ValueError:
                         pass
@@ -932,6 +957,20 @@ def submit_order():
                     kortingsbedrag = verzendkosten
 
         totaalbedrag = round(subtotaal + verzendkosten - kortingsbedrag, 2)
+
+        # ── Stock check with row-level lock (UXF-01) ──────────────────────────
+        for item in data['items']:
+            if int(item.get('is_on_demand', 0)):
+                continue
+            stock_row = conn.execute(
+                'SELECT voorraad FROM products WHERE sku_key = %s FOR UPDATE',
+                (item['sku_key'],)
+            ).fetchone()
+            if not stock_row or stock_row['voorraad'] < int(item['aantal']):
+                return jsonify({
+                    'success': False,
+                    'error': f"Sorry, {item['naam']} maat {item.get('maat', '')} is niet meer op voorraad."
+                }), 400
 
         cur = conn.execute('''
             INSERT INTO orders
@@ -984,7 +1023,6 @@ def submit_order():
                     pass
 
         conn.commit()
-        conn.close()
 
         order_data = {
             'bestelnummer':  bestelnummer,
@@ -1058,17 +1096,20 @@ def submit_order():
 
     except Exception as e:
         conn.rollback()
-        conn.close()
         return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        conn.close()
 
 
 @app.route('/success/<int:bestelnummer>')
 def success(bestelnummer):
     conn = get_db()
-    order_row = conn.execute(
-        'SELECT * FROM orders WHERE bestelnummer = %s', (bestelnummer,)
-    ).fetchone()
-    conn.close()
+    try:
+        order_row = conn.execute(
+            'SELECT * FROM orders WHERE bestelnummer = %s', (bestelnummer,)
+        ).fetchone()
+    finally:
+        conn.close()
     if not order_row:
         return redirect('/')
     return render_template('success.html', bestelnummer=bestelnummer, order=dict(order_row))
@@ -1099,41 +1140,40 @@ def admin_logout():
 def admin_overview():
     conn = get_db()
     today = date.today().isoformat()
-
-    stats = {
-        'today_revenue': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
-            "WHERE besteldatum::date = %s AND betaalstatus = 'Betaald'", (today,)
-        ).fetchone()['val'],
-        'week_revenue': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
-            "WHERE DATE_TRUNC('week', besteldatum::timestamp) = DATE_TRUNC('week', NOW()) "
-            "AND betaalstatus = 'Betaald'"
-        ).fetchone()['val'],
-        'month_revenue': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
-            "WHERE DATE_TRUNC('month', besteldatum::timestamp) = DATE_TRUNC('month', NOW()) "
-            "AND betaalstatus = 'Betaald'"
-        ).fetchone()['val'],
-        'pending_payment': conn.execute(
-            "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders WHERE betaalstatus = 'Onbetaald'"
-        ).fetchone()['val'],
-        'low_stock_count': conn.execute(
-            "SELECT COUNT(*) AS cnt FROM products WHERE voorraad > 0 AND voorraad <= 1"
-        ).fetchone()['cnt'],
-        'total_orders': conn.execute(
-            "SELECT COUNT(*) AS cnt FROM orders"
-        ).fetchone()['cnt'],
-    }
-
-    last_orders = conn.execute('''
-        SELECT o.bestelnummer, c.naam as klant_naam, c.instagram,
-               o.besteldatum, o.totaalbedrag, o.bestellingstatus, o.betaalstatus
-        FROM orders o LEFT JOIN customers c ON o.klant_id=c.klant_id
-        ORDER BY o.bestelnummer DESC LIMIT 5
-    ''').fetchall()
-
-    conn.close()
+    try:
+        stats = {
+            'today_revenue': conn.execute(
+                "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
+                "WHERE besteldatum::date = %s AND betaalstatus = 'Betaald'", (today,)
+            ).fetchone()['val'],
+            'week_revenue': conn.execute(
+                "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
+                "WHERE DATE_TRUNC('week', besteldatum::timestamp) = DATE_TRUNC('week', NOW()) "
+                "AND betaalstatus = 'Betaald'"
+            ).fetchone()['val'],
+            'month_revenue': conn.execute(
+                "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders "
+                "WHERE DATE_TRUNC('month', besteldatum::timestamp) = DATE_TRUNC('month', NOW()) "
+                "AND betaalstatus = 'Betaald'"
+            ).fetchone()['val'],
+            'pending_payment': conn.execute(
+                "SELECT COALESCE(SUM(totaalbedrag), 0) AS val FROM orders WHERE betaalstatus = 'Onbetaald'"
+            ).fetchone()['val'],
+            'low_stock_count': conn.execute(
+                "SELECT COUNT(*) AS cnt FROM products WHERE voorraad > 0 AND voorraad <= 1"
+            ).fetchone()['cnt'],
+            'total_orders': conn.execute(
+                "SELECT COUNT(*) AS cnt FROM orders"
+            ).fetchone()['cnt'],
+        }
+        last_orders = conn.execute('''
+            SELECT o.bestelnummer, c.naam as klant_naam, c.instagram,
+                   o.besteldatum, o.totaalbedrag, o.bestellingstatus, o.betaalstatus
+            FROM orders o LEFT JOIN customers c ON o.klant_id=c.klant_id
+            ORDER BY o.bestelnummer DESC LIMIT 5
+        ''').fetchall()
+    finally:
+        conn.close()
     return jsonify({
         **{k: round(float(v), 2) for k, v in stats.items()},
         'last_orders': [dict(r) for r in last_orders],
@@ -1144,22 +1184,22 @@ def admin_overview():
 @admin_required
 def admin_orders_api():
     conn = get_db()
-    orders = conn.execute('''
-        SELECT o.*, c.naam as klant_naam, c.instagram, c.adres, c.postcode, c.stad, c.land
-        FROM orders o LEFT JOIN customers c ON o.klant_id=c.klant_id
-        ORDER BY o.bestelnummer DESC
-    ''').fetchall()
-
-    result = []
-    for o in orders:
-        o_dict = dict(o)
-        items = conn.execute(
-            'SELECT * FROM order_items WHERE bestelnummer = %s', (o['bestelnummer'],)
-        ).fetchall()
-        o_dict['items'] = [dict(i) for i in items]
-        result.append(o_dict)
-
-    conn.close()
+    try:
+        orders = conn.execute('''
+            SELECT o.*, c.naam as klant_naam, c.instagram, c.adres, c.postcode, c.stad, c.land
+            FROM orders o LEFT JOIN customers c ON o.klant_id=c.klant_id
+            ORDER BY o.bestelnummer DESC
+        ''').fetchall()
+        result = []
+        for o in orders:
+            o_dict = dict(o)
+            items = conn.execute(
+                'SELECT * FROM order_items WHERE bestelnummer = %s', (o['bestelnummer'],)
+            ).fetchall()
+            o_dict['items'] = [dict(i) for i in items]
+            result.append(o_dict)
+    finally:
+        conn.close()
     return jsonify(result)
 
 
@@ -1185,20 +1225,22 @@ def admin_products_api():
 @admin_required
 def admin_customers_api():
     conn = get_db()
-    customers = conn.execute(
-        'SELECT * FROM customers ORDER BY aantal_bestellingen DESC, totaal_uitgegeven DESC'
-    ).fetchall()
-    result = []
-    for cust in customers:
-        c_dict = dict(cust)
-        orders = conn.execute(
-            'SELECT bestelnummer, besteldatum, totaalbedrag, bestellingstatus, betaalstatus '
-            'FROM orders WHERE klant_id=%s ORDER BY bestelnummer DESC',
-            (cust['klant_id'],)
+    try:
+        customers = conn.execute(
+            'SELECT * FROM customers ORDER BY aantal_bestellingen DESC, totaal_uitgegeven DESC'
         ).fetchall()
-        c_dict['orders'] = [dict(o) for o in orders]
-        result.append(c_dict)
-    conn.close()
+        result = []
+        for cust in customers:
+            c_dict = dict(cust)
+            orders = conn.execute(
+                'SELECT bestelnummer, besteldatum, totaalbedrag, bestellingstatus, betaalstatus '
+                'FROM orders WHERE klant_id=%s ORDER BY bestelnummer DESC',
+                (cust['klant_id'],)
+            ).fetchall()
+            c_dict['orders'] = [dict(o) for o in orders]
+            result.append(c_dict)
+    finally:
+        conn.close()
     return jsonify(result)
 
 
