@@ -756,7 +756,7 @@ def migrate_db():
         # is_called=false means the next nextval() returns exactly this value.
         conn.execute(
             "SELECT setval('bestelnummer_seq', "
-            "GREATEST((SELECT MAX(bestelnummer) FROM orders), 10000) + 1, false)"
+            "GREATEST((SELECT MAX(bestelnummer) FROM orders WHERE bestelnummer < 20000), 10000) + 1, false)"
         )
         # Sequence used for collision-free klant_id generation (STB-04)
         conn.execute('CREATE SEQUENCE IF NOT EXISTS klant_id_seq START 1')
