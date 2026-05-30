@@ -23,10 +23,17 @@
       Bestelnummer: <strong>#{{ bestelnummer }}</strong>
     </div>
 
+    {% if email_sent %}
     <p>
       Je factuur is verstuurd naar je e-mailadres.<br>
       Je ontvangt een bevestiging zodra je betaling is ontvangen.
     </p>
+    {% else %}
+    <p style="color:var(--red);background:#ffebee;border-radius:8px;padding:14px 16px;font-size:14px">
+      Je bestelling is ontvangen maar we konden je factuur niet versturen.
+      Neem contact op via Instagram: <strong>@Shoppybrand_</strong>
+    </p>
+    {% endif %}
 
     {% if order %}
     <div style="background:var(--grey);border-radius:8px;padding:16px;text-align:left;margin:20px 0;font-size:13px">

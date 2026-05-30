@@ -1,9 +1,11 @@
 import os
 import io
+import re
 import atexit
 import traceback
 from datetime import datetime, date, timedelta
 from functools import wraps
+from html import escape
 
 from flask import Flask, render_template, request, jsonify, session, redirect, send_file
 from dotenv import load_dotenv
@@ -25,8 +27,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 load_dotenv()
 
+_log_level = getattr(logging, os.getenv('LOG_LEVEL', 'INFO').upper(), logging.INFO)
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=_log_level,
     format='%(asctime)s %(levelname)s %(name)s: %(message)s',
 )
 
@@ -48,6 +51,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DATABASE_URL   = os.getenv('DATABASE_URL')
 ADMIN_PASSWORD = os.environ['ADMIN_PASSWORD']    # must be set — no fallback
 INVOICES_DIR   = os.path.join(BASE_DIR, 'data', 'invoices')
+BASE_URL       = os.getenv('BASE_URL', 'https://shoppybrand.onrender.com')
 
 cloudinary.config(cloudinary_url=os.getenv('CLOUDINARY_URL', ''))
 
@@ -401,9 +405,9 @@ def send_invoice_email(order_data, pdf_source):
         raise ValueError('Geen e-mailadres voor klant')
 
     bestelnummer   = order_data['bestelnummer']
-    naam           = order_data.get('naam') or 'Klant'
+    naam           = escape(order_data.get('naam') or 'Klant')
     totaal         = f"{float(order_data['totaalbedrag']):.2f}".replace('.', ',')
-    verzendmethode = order_data.get('verzendmethode') or '–'
+    verzendmethode = escape(order_data.get('verzendmethode') or '–')
 
     html_body = f'''<!DOCTYPE html>
 <html>
@@ -472,7 +476,7 @@ def send_owner_notification(order_data):
         f'Totaal: €{totaal}\n'
         f'Verzending: {verzendmethode}\n'
         f'Producten: {aantal_items} artikel(en)\n\n'
-        f'Ga naar het admin panel: http://localhost:5000/admin'
+        f'Ga naar het admin panel: {BASE_URL}/admin'
     )
 
     msg = MIMEText(body, 'plain', 'utf-8')
@@ -499,7 +503,7 @@ def send_reminder_email(order_data, pdf_source):
         raise ValueError('Geen e-mailadres voor klant')
 
     bestelnummer   = order_data['bestelnummer']
-    naam           = order_data.get('naam') or 'Klant'
+    naam           = escape(order_data.get('naam') or 'Klant')
     totaal         = f"{float(order_data['totaalbedrag']):.2f}".replace('.', ',')
 
     html_body = f'''<!DOCTYPE html>
@@ -805,7 +809,11 @@ def api_customer():
         instagram = '@' + instagram
     conn = get_db()
     try:
-        row = conn.execute('SELECT * FROM customers WHERE instagram = %s', (instagram,)).fetchone()
+        row = conn.execute(
+            'SELECT naam, telefoon, adres, postcode, stad, land '
+            'FROM customers WHERE instagram = %s',
+            (instagram,)
+        ).fetchone()
     finally:
         conn.close()
     return jsonify(dict(row) if row else None)
@@ -890,6 +898,17 @@ def submit_order():
             return jsonify({'success': False, 'error': f'Veld {field} is verplicht'}), 400
     if not data['items']:
         return jsonify({'success': False, 'error': 'Geen producten geselecteerd'}), 400
+
+    # SEC-08: e-mail format validation
+    if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', data['email'].strip()):
+        return jsonify({'success': False, 'error': 'Ongeldig e-mailadres'}), 400
+
+    # SEC-09: field length limits
+    _FIELD_LIMITS = {'naam': 120, 'adres': 200, 'opmerking': 1000, 'postcode': 20, 'stad': 80}
+    for field, max_len in _FIELD_LIMITS.items():
+        if data.get(field) and len(str(data[field])) > max_len:
+            return jsonify({'success': False,
+                            'error': f'{field.capitalize()} is te lang (maximaal {max_len} tekens)'}), 400
 
     conn = get_db()
     now = datetime.now().isoformat()
@@ -1063,15 +1082,18 @@ def submit_order():
             logging.exception('PDF generation failed for order %s', bestelnummer)
 
         # ── Send invoice email to customer ────────────────────────────────
+        email_sent = False
         if pdf_buf is not None:
             try:
                 send_invoice_email(order_data, pdf_buf)
+                email_sent = True
                 logging.info('Invoice email sent to %s for order %s',
                              order_data.get('email'), bestelnummer)
             except Exception:
                 logging.exception('Invoice email failed for order %s', bestelnummer)
         else:
             logging.error('Skipping invoice email for order %s: PDF not generated', bestelnummer)
+        session['email_sent'] = email_sent
 
         # ── Cache PDF to disk for admin panel (best-effort) ───────────────
         try:
@@ -1103,6 +1125,7 @@ def submit_order():
 
 @app.route('/success/<int:bestelnummer>')
 def success(bestelnummer):
+    email_sent = session.pop('email_sent', True)  # default True avoids false warnings on direct nav
     conn = get_db()
     try:
         order_row = conn.execute(
@@ -1112,7 +1135,8 @@ def success(bestelnummer):
         conn.close()
     if not order_row:
         return redirect('/')
-    return render_template('success.html', bestelnummer=bestelnummer, order=dict(order_row))
+    return render_template('success.html', bestelnummer=bestelnummer,
+                           order=dict(order_row), email_sent=email_sent)
 
 
 # ── ADMIN ROUTES ──────────────────────────────────────────────────────────────
@@ -1407,23 +1431,24 @@ def admin_resend_invoice():
     if not bestelnummer:
         return jsonify({'success': False, 'error': 'Bestelnummer vereist'}), 400
     conn = get_db()
-    order = conn.execute('''
-        SELECT o.*, c.naam, c.instagram, c.email, c.telefoon, c.adres, c.postcode, c.stad, c.land
-        FROM orders o LEFT JOIN customers c ON o.klant_id = c.klant_id
-        WHERE o.bestelnummer = %s
-    ''', (bestelnummer,)).fetchone()
-    if not order:
+    try:
+        order = conn.execute('''
+            SELECT o.*, c.naam, c.instagram, c.email, c.telefoon, c.adres, c.postcode, c.stad, c.land
+            FROM orders o LEFT JOIN customers c ON o.klant_id = c.klant_id
+            WHERE o.bestelnummer = %s
+        ''', (bestelnummer,)).fetchone()
+        if not order:
+            return jsonify({'success': False, 'error': 'Bestelling niet gevonden'}), 404
+        items = conn.execute(
+            'SELECT * FROM order_items WHERE bestelnummer = %s', (bestelnummer,)
+        ).fetchall()
+    finally:
         conn.close()
-        return jsonify({'success': False, 'error': 'Bestelling niet gevonden'}), 404
-    items = conn.execute(
-        'SELECT * FROM order_items WHERE bestelnummer = %s', (bestelnummer,)
-    ).fetchall()
-    conn.close()
     order_data = dict(order)
     order_data['items'] = [dict(i) for i in items]
     try:
-        pdf_path = generate_invoice(order_data)
-        send_invoice_email(order_data, pdf_path)
+        pdf_buf = generate_invoice(order_data, output=io.BytesIO())
+        send_invoice_email(order_data, pdf_buf)
         return jsonify({'success': True})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -2024,12 +2049,6 @@ def _do_test_email():
         return jsonify({'success': False, 'error': str(e), 'diagnostics': diag})
 
 
-@app.route('/admin/test-email')
-def admin_test_email_public():
-    """Diagnostic route — no login required so it works even before auth is set up."""
-    return _do_test_email()
-
-
 @app.route('/admin/api/test-email')
 @admin_required
 def admin_test_email():
@@ -2140,7 +2159,10 @@ def check_unpaid_orders():
 
 # ── STARTUP (runs when gunicorn imports the module) ───────────────────────────
 
-migrate_db()
+try:
+    migrate_db()
+except Exception:
+    logging.exception('migrate_db failed at startup — app continues; some features may be degraded')
 
 _scheduler = BackgroundScheduler(daemon=True)
 _scheduler.add_job(
